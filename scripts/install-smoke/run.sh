@@ -171,7 +171,7 @@ check_shell "new-handoff writes the first event" '
     --repo-name blank-wiki \
     --repo-branch main \
     --repo-sha "$SHA" \
-    --workstream smoke-check:primary \
+    --workstream smoke-check:candidate_new \
     --what-was-done "ran the install smoke handoff cycle" \
     --next "garden this event" &&
   ls wiki/events/*/*/*.json >/dev/null
@@ -179,7 +179,7 @@ check_shell "new-handoff writes the first event" '
 check_shell "garden apply routes the event into a workstream" '
   cd "'"$FIXTURE"'" &&
   EVENT=$(ls wiki/events/*/*/*.json | head -1) &&
-  python3 "'"$KIT"'/scripts/wiki-garden.py" "$EVENT" --wiki "'"$FIXTURE"'" &&
+  python3 "'"$KIT"'/scripts/wiki-garden.py" "$EVENT" --wiki "'"$FIXTURE"'" --workstream smoke-check &&
   [ -f workstreams/smoke-check.md ]
 '
 check_shell "projections rebuild after the cycle" '
@@ -200,20 +200,20 @@ check_blocked "hand-edited log.md is blocked at commit" '
   echo "hand edit" >> wiki/log.md && git add wiki/log.md &&
   git commit -q -m "smoke: tamper log"
 '
-check_shell "reset tamper 1" 'cd "'"$FIXTURE"'" && git checkout -- wiki/log.md'
+check_shell "reset tamper 1" 'cd "'"$FIXTURE"'" && git checkout HEAD -- wiki/log.md'
 check_blocked "modifying an existing event is blocked at commit" '
   cd "'"$FIXTURE"'" &&
   EVENT=$(ls wiki/events/*/*/*.json | head -1) &&
   python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); open(p,\"w\").write(s.replace(\"install smoke cycle\", \"tampered\"))" "$EVENT" &&
   git add "$EVENT" && git commit -q -m "smoke: tamper event"
 '
-check_shell "reset tamper 2" 'cd "'"$FIXTURE"'" && git checkout -- wiki/events'
+check_shell "reset tamper 2" 'cd "'"$FIXTURE"'" && git checkout HEAD -- wiki/events'
 check_blocked "stale pending projection is blocked at commit" '
   cd "'"$FIXTURE"'" &&
   python3 -c "import json,sys; p=\"wiki/pending/index.json\"; d=json.load(open(p)); d[\"event_count\"]=d.get(\"event_count\",0)+7; json.dump(d,open(p,\"w\"))" &&
   git add wiki/pending/index.json && git commit -q -m "smoke: tamper pending"
 '
-check_shell "reset tamper 3" 'cd "'"$FIXTURE"'" && git checkout -- wiki/pending'
+check_shell "reset tamper 3" 'cd "'"$FIXTURE"'" && git checkout HEAD -- wiki/pending'
 check_blocked "invalid added event is blocked at commit" '
   cd "'"$FIXTURE"'" &&
   mkdir -p wiki/events/2099/01 &&
