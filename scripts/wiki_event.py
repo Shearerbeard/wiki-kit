@@ -1230,9 +1230,9 @@ def pending_mismatch(
     # absolute paths and report every non-empty pending store as drifted.
     # A non-conventional layout (library callers on bare tmp trees) keeps
     # the caller's own pin state; the prior pin is restored afterwards.
-    resolved_events = events_dir.resolve()
-    if resolved_events.name == "events" and resolved_events.parent.name == "wiki":
-        set_wiki_root(resolved_events.parent.parent)
+    derived = conventional_store_root(events_dir)
+    if derived is not None:
+        set_wiki_root(derived)
     try:
         events = load_events(events_dir)
         expected = build_pending_index(events, sources_dir)
@@ -1825,6 +1825,20 @@ def missing_command(_args: argparse.Namespace) -> NoReturn:
     )
 
 
+def conventional_store_root(events_dir: Path) -> Path | None:
+    """The wiki root implied by the conventional <root>/wiki/events
+    layout, or None for any other layout. The layout is the explicit
+    contract both sides derive the store root from: the writing CLI and
+    the checking consumers (hook, doctor) pin identically, so stored
+    event paths come out repo-relative on both sides. Bare library
+    layouts (tmp-tree tests) derive nothing and keep absolute paths on
+    both sides."""
+    resolved = events_dir.resolve()
+    if resolved.name == "events" and resolved.parent.name == "wiki":
+        return resolved.parent.parent
+    return None
+
+
 def _wiki_root_for(args: argparse.Namespace) -> Path:
     """Resolve the wiki root once per invocation and pin stored-path
     resolution (repo_relative/stored_path) to it."""
@@ -1848,6 +1862,16 @@ def _apply_content_defaults(args: argparse.Namespace) -> None:
         args.events_dir = _wiki_root_for(args) / "wiki" / "events"
     if args.func is cmd_capture_sources and args.sources_dir is None:
         args.sources_dir = _wiki_root_for(args) / "wiki" / "sources"
+    # A fully-explicit invocation never resolves wiki.toml, but a store at
+    # the conventional layout still pins its root so written projections
+    # carry repo-relative paths - the same derivation pending_mismatch
+    # applies on the checking side.
+    if _wiki_root is None:
+        events_dir = getattr(args, "events_dir", None)
+        if isinstance(events_dir, Path):
+            derived = conventional_store_root(events_dir)
+            if derived is not None:
+                set_wiki_root(derived)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -97,6 +97,14 @@ def staged_changes() -> list[tuple[str, str]]:
     return changes
 
 
+def staged_mode(path: str) -> str:
+    """The staged index mode for a path ('120000' = symlink); the index
+    is authoritative because checkout-index does not reliably
+    materialize symlink entries into the temporary tree."""
+    raw = git("ls-files", "-s", "--", path)
+    return raw.split(" ", 1)[0] if raw else ""
+
+
 def head_text(path: str) -> str | None:
     try:
         return git("show", f"HEAD:{path}")
@@ -136,7 +144,12 @@ def check_log_projection(
     for status, path in changes:
         if path == LOG_PATH and status == "D":
             return [f"{LOG_PATH} is a generated projection: deletion is not allowed"]
-    if not (staged_root / LOG_PATH).exists():
+    if staged_mode(LOG_PATH) == "120000":
+        # A symlink projection defeats the byte-equality contract (and a
+        # dangling one would read as absent below).
+        return [f"{LOG_PATH} must be a regular file, not a symlink"]
+    staged_log = staged_root / LOG_PATH
+    if not staged_log.exists():
         # No log.md in the staged index at all: the deployment has not
         # committed a projection yet (an owner's untracked file may sit
         # at that path), so there is no committed projection to be
@@ -222,15 +235,23 @@ def check_added_events(
         if status != "A" or not path.startswith(EVENTS_PREFIX):
             continue
         if not path.endswith(".json"):
-            # .gitkeep is the installer's dir-keeper; anything else
-            # non-JSON under the store is an unvalidatable smuggle.
-            if Path(path).name != ".gitkeep":
-                errors.append(
-                    f"{path}: only .json event files may be added under "
-                    f"{EVENTS_PREFIX}"
-                )
+            # The installer's dir-keeper is the ONE allowed non-JSON
+            # file: the exact top-level path, a regular empty file.
+            # Anything else non-JSON under the store is an
+            # unvalidatable smuggle.
+            if (
+                path == f"{EVENTS_PREFIX}.gitkeep"
+                and staged_mode(path) == "100644"
+                and (staged_root / path).read_bytes() == b""
+            ):
+                continue
+            errors.append(
+                f"{path}: only .json event files (and the installer's "
+                f"empty {EVENTS_PREFIX}.gitkeep) may be added under "
+                f"{EVENTS_PREFIX}"
+            )
             continue
-        if (staged_root / path).is_symlink():
+        if staged_mode(path) == "120000":
             errors.append(
                 f"{path}: symlinks may not be added under {EVENTS_PREFIX} - "
                 "the store holds regular files only"
@@ -294,7 +315,10 @@ def check_pending_projection(
             index_path=staged_root / "wiki" / "pending" / "index.json",
             latest_path=staged_root / "wiki" / "pending" / "latest.md",
         )
-    except wiki_event.ValidationError as exc:
+    except (wiki_event.ValidationError, OSError) as exc:
+        # OSError covers store files the materialized tree cannot read,
+        # e.g. a dangling symlink smuggled under the store (also rejected
+        # by the added-events check).
         return [f"pending projection check failed to run: {exc}"]
     return [
         f"wiki/pending is generated - {mismatch}; run the pending builder "

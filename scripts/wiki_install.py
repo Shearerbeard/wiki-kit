@@ -362,11 +362,11 @@ def install(target: Path, no_scheduler: bool) -> None:
     # store's projection (decision-4 non-destructive rule; the doctor
     # reports the drift and regeneration is the owner's call).
     log_path = target / "wiki" / "log.md"
-    if not log_path.exists():
-        kit_cli("wiki-render.py", "log", "--wiki", str(target))
-        written.append(log_path)
-        note("✓ log projection rendered")
-    else:
+    if log_path.is_symlink():
+        # is_symlink() is checked first because exists() follows links
+        # and is false for a dangling one, which is still owner content.
+        note("✓ wiki/log.md exists (symlink), left in place")
+    elif log_path.exists():
         check = subprocess.run(
             [
                 sys.executable,
@@ -379,14 +379,24 @@ def install(target: Path, no_scheduler: bool) -> None:
             capture_output=True,
             text=True,
         )
+        detail = check.stderr.strip() or check.stdout.strip()
         if check.returncode == 0:
             note("✓ wiki/log.md matches the store projection")
-        else:
+        elif "does not match rendered output" in detail:
             note(
                 "! wiki/log.md exists and differs from the store "
                 "projection; left in place (the doctor reports the drift; "
                 "regenerate when ready)"
             )
+        else:
+            raise InstallError(
+                f"log projection check failed to run (not a mismatch): "
+                f"{detail}"
+            )
+    else:
+        kit_cli("wiki-render.py", "log", "--wiki", str(target))
+        written.append(log_path)
+        note("✓ log projection rendered")
     merge_claude_settings(config, written)
     initial_commit(target, written)
     render_orientation(config)

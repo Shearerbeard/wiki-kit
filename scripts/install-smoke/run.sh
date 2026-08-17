@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPORT_DIR="$KIT_DIR/reports/install-smoke"
-# Knob 16: cosmetic naming derives from the repo, never a hardcode. The
-# kit's own harness has no deployment config to read at build time, so
-# the kit repo's directory name is the naming source here; a deployment
-# smoke (the heavy-canary stage) derives from its [wiki].name.
+# Knob 16: cosmetic naming is never a hardcode. The kit's own harness
+# has no deployment config to read at build time, so the kit repo's
+# directory name is the naming source here; a deployment smoke (the
+# heavy-canary stage) takes its prefix from [wiki].name instead.
 KIT_NAME="$(basename "$KIT_DIR")"
 IMAGE_NAME="${IMAGE_NAME:-$KIT_NAME-install-smoke:2026-08-16}"
 CONTAINER_NAME="${CONTAINER_NAME:-$KIT_NAME-install-smoke-$(date -u +%Y%m%dT%H%M%SZ)}"

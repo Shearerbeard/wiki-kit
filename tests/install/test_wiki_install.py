@@ -247,6 +247,144 @@ def test_hook_rejects_non_json_event_addition(tmp_path: Path) -> None:
     assert "only .json event files" in commit.stderr
 
 
+def _commit(target: Path, message: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_install_preserves_dangling_log_symlink(tmp_path: Path) -> None:
+    """Gate A verification finding: exists() is false for a dangling
+    symlink, which is still owner content at the projection path."""
+    target = tmp_path / "vault-wiki"
+    (target / "wiki").mkdir(parents=True)
+    (target / "wiki" / "log.md").symlink_to(target / "nowhere.md")
+
+    result = run_install(target)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (target / "wiki" / "log.md").is_symlink()
+    assert "symlink" in result.stdout
+
+
+def test_hook_rejects_symlink_log_projection(tmp_path: Path) -> None:
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    log = target / "wiki" / "log.md"
+    log.unlink()
+    log.symlink_to(target / "nowhere.md")
+    git(target, "add", "wiki/log.md")
+    commit = _commit(target, "smuggle a symlink projection")
+    assert commit.returncode != 0
+    assert "regular file" in commit.stderr
+
+
+def test_hook_rejects_symlink_event_addition(tmp_path: Path) -> None:
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    events = target / "wiki" / "events"
+    (events / "2099").mkdir()
+    (events / "2099" / "evil.json").symlink_to("/etc/hostname")
+    git(target, "add", "wiki/events/2099/evil.json")
+    commit = _commit(target, "smuggle a symlink event")
+    assert commit.returncode != 0
+    assert "symlink" in commit.stderr
+
+
+def test_hook_rejects_nested_or_nonempty_gitkeep(tmp_path: Path) -> None:
+    """The keeper exemption is exactly wiki/events/.gitkeep, empty and
+    regular; anything else non-JSON is rejected."""
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    events = target / "wiki" / "events"
+    (events / "2099").mkdir()
+    (events / "2099" / ".gitkeep").write_text("smuggled content\n")
+    git(target, "add", "wiki/events/2099/.gitkeep")
+    commit = _commit(target, "smuggle via nested gitkeep")
+    assert commit.returncode != 0
+    assert "only .json event files" in commit.stderr
+
+
+def test_explicit_path_build_agrees_with_checker(tmp_path: Path) -> None:
+    """Gate A verification finding: a fully-explicit build-pending at the
+    conventional layout must pin the same store root the checker derives,
+    so both sides store repo-relative paths."""
+    root = tmp_path / "bare"
+    events = root / "wiki" / "events"
+    events.mkdir(parents=True)
+    (root / "wiki" / "sources").mkdir()
+    subprocess.run(
+        [
+            sys.executable,
+            str(KIT_ROOT / "scripts" / "wiki-event.py"),
+            "new-handoff",
+            "--events-dir",
+            str(events),
+            "--tool",
+            "manual",
+            "--summary",
+            "explicit-path regression",
+            "--repo-name",
+            "bare",
+            "--repo-branch",
+            "main",
+            "--repo-sha",
+            "abc1234",
+            "--workstream",
+            "explicit-check:candidate_new",
+            "--what-was-done",
+            "wrote an event",
+            "--next",
+            "nothing",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    index = json.loads((root / "wiki" / "pending" / "index.json").read_text())
+    stored_paths = [event["event_path"] for event in index["events"]]
+    assert stored_paths and all(
+        path.startswith("wiki/events/") for path in stored_paths
+    ), stored_paths
+
+    sys.path.insert(0, str(KIT_ROOT / "scripts"))
+    try:
+        import wiki_event
+
+        mismatches = wiki_event.pending_mismatch(
+            events_dir=events,
+            sources_dir=root / "wiki" / "sources",
+            index_path=root / "wiki" / "pending" / "index.json",
+            latest_path=root / "wiki" / "pending" / "latest.md",
+        )
+    finally:
+        sys.path.pop(0)
+    assert mismatches == []
+
+
+def test_smoke_image_names_are_repo_derived() -> None:
+    """Gate A ledger-audit drop (knob 16): no hardcoded image name; the
+    prefix derives from the repo directory name."""
+    text = (KIT_ROOT / "scripts" / "install-smoke" / "run.sh").read_text()
+    assert 'KIT_NAME="$(basename "$KIT_DIR")"' in text
+    assert '${IMAGE_NAME:-$KIT_NAME-install-smoke' in text
+    assert '${CONTAINER_NAME:-$KIT_NAME-install-smoke' in text
+    assert "wiki-kit-install-smoke" not in text
+
+
 def test_existing_repo_with_history_gets_no_new_commit(tmp_path: Path) -> None:
     target = tmp_path / "history-wiki"
     target.mkdir()
