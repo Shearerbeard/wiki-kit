@@ -177,3 +177,22 @@ count by design.
 | `pyproject.toml` | port | the kit's packaging: dependency pins (`jsonschema` hard dep per D9), ruff and pytest config; project name renamed with the kit |
 | `uv.lock` | port | regenerated in the kit repo from the ported `pyproject.toml` |
 | `.vale.ini` | port | the prose-lint contract for kit docs; path scopes rewritten for the kit layout |
+
+## K2 re-dispositions (2026-08-16)
+
+Recorded at K2's Gate D per the card's ledger-update duty; the ratified
+rows above stay as ratified, and this section holds the deltas the port
+actually shipped. Sources: the Gate A ledger audit (gpt-5.6-sol) and
+the board owner's build log.
+
+| Row | Delta |
+|---|---|
+| `scripts/handoff.ts` | port -> template: ships as `templates/handoff.ts.template` with a `{{DOCS_SUBPATH}}` placeholder; K3 renders it at dock time |
+| `scripts/pre-commit` | the installed form is a generated wrapper pinning the installing interpreter and exec-ing the kit's current hook, not a symlink: `#!/usr/bin/env python3` under git resolves to a PATH python that may lack jsonschema |
+| `scripts/com.*.plist` rows | the rendered launchd templates carry `HOME`, `LOG_DIR`, and `PATH` placeholders beyond the originally named set - launchd expands nothing, so every runtime-derived value renders in full |
+| `scripts/install-smoke/run.sh` | knob 16 lands as repo-directory-derived naming for the kit's own harness (it has no deployment config at build time); a deployment smoke (heavy-canary stage) takes its prefix from `[wiki].name` |
+| `scripts/wiki_event.py` | Tool enum audit outcome: `pi` DROPPED (zero stored events carry it, so the adoption migration is unaffected); `claude-code`, `opencode`, `codex`, `manual` kept as generic; per-deployment enum extension rejected because event validity must never be deployment-relative (registry-only, one loader) |
+| `schemas/events/handoff-v1.schema.json` | tool enum narrowed with the audit; title reworded to name the format, not the source family (the `"aura"` envelope property itself is untouched) |
+| `schemas/events/handoff-v2.schema.json` | tool enum narrowed with the audit; the description's source-family mentions reworded neutrally (schema metadata, not the on-disk contract) |
+| `tests/garden/*` sample rows | four fixture files renamed with their content re-fixturing: `agent-driver-reactivated` -> `task-router-reactivated`, `context-budget-monitoring-new` -> `usage-budget-monitoring-new`, `evolution-benchmark-updated` -> `eval-benchmark-updated`, `sse-transport-resolved` -> `sync-transport-resolved` |
+| `scripts/wiki_render.py` | the decision-4 boot answers shipped: legacy log and epoch are optional as a pair; the orientation skeleton renders from `templates/orientation-quickstart.md` at init |
