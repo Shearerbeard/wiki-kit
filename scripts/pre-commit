@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Pre-commit hook for a wiki repo: mechanical enforcement of the
+provenance rules over staged content.
+
+The kit installer symlinks this file into the wiki repo's git hooks dir.
+Machinery (renderer, validator, schemas) runs from the KIT checkout this
+file resolves to; content comes from the STAGED tree of the wiki repo
+the commit is happening in. The enforcement contract, including what
+this hook does and does not cover, is docs/enforcement-contract.md in
+the kit repo.
+
+Checks, on staged content only:
+1. wiki/log.md is a generated projection: whenever it or any renderer
+   input (wiki/events/**, wiki/log-legacy.md, wiki/log-epoch.json,
+   wiki/quarantine.json) is staged, the staged log.md must byte-equal
+   the renderer's output over the staged tree.
+2. wiki/log-legacy.md is immutable once it exists.
+3. wiki/events/** is immutable: existing event files cannot be modified,
+   deleted, or renamed; only new files may be added.
+4. Every added wiki/events/**/*.json validates against the kit's schema
+   registry. Added handoff events must have status pending_garden.
+5. wiki/pending/{index.json,latest.md} are generated projections:
+   whenever they or their inputs (events, sources) are staged, the
+   staged pending files must match the pending builder's output over
+   the staged tree.
+6. Staged wiki/quarantine.json, wiki/log-epoch.json, and
+   wiki/pending/index.json validate against their artifact schemas.
+7. If anything under workstreams/ is staged, the workstream validator
+   must pass over the staged tree.
+
+Installed by the kit installer (scripts/install.sh). Manual form, from
+the wiki repo root:
+  ln -sf <kit>/scripts/pre-commit "$(git rev-parse --git-path hooks)/pre-commit"
+
+Bypass for emergencies: git commit --no-verify (the rules still apply;
+you are accountable for the bypass).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+KIT_SCRIPTS = Path(__file__).resolve().parent
+if str(KIT_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(KIT_SCRIPTS))
+
+import wiki_event  # noqa: E402
+
+LOG_PATH = "wiki/log.md"
+LEGACY_PATH = "wiki/log-legacy.md"
+EPOCH_PATH = "wiki/log-epoch.json"
+QUARANTINE_PATH = "wiki/quarantine.json"
+EVENTS_PREFIX = "wiki/events/"
+SOURCES_PREFIX = "wiki/sources/"
+PENDING_PREFIX = "wiki/pending/"
+WORKSTREAMS_PREFIX = "workstreams/"
+LOG_RENDER_INPUTS = {LOG_PATH, LEGACY_PATH, EPOCH_PATH, QUARANTINE_PATH}
+ARTIFACT_SCHEMAS = {
+    QUARANTINE_PATH: "quarantine.schema.json",
+    EPOCH_PATH: "log-epoch.schema.json",
+    "wiki/pending/index.json": "pending-index.schema.json",
+}
+
+
+def git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def repo_root() -> Path:
+    return Path(git("rev-parse", "--show-toplevel").strip())
+
+
+def staged_changes() -> list[tuple[str, str]]:
+    """(status, path) pairs for staged changes. --no-renames decomposes
+    renames into D + A so a `git mv` into wiki/events/** cannot bypass the
+    immutability, validation, or projection checks."""
+    raw = git("diff", "--cached", "--name-status", "-z", "--no-renames")
+    parts = raw.split("\0")
+    changes: list[tuple[str, str]] = []
+    i = 0
+    while i < len(parts) and parts[i]:
+        status = parts[i][0]
+        path = parts[i + 1]
+        changes.append((status, path))
+        i += 2
+    return changes
+
+
+def head_text(path: str) -> str | None:
+    try:
+        return git("show", f"HEAD:{path}")
+    except subprocess.CalledProcessError:
+        return None  # path does not exist in HEAD (initial commit / new file)
+
+
+def materialization_relevant(changes: list[tuple[str, str]]) -> bool:
+    """True when any staged path feeds a staged-tree check (projection
+    byte-equality, event/artifact validation, workstream validation)."""
+    return any(
+        path in LOG_RENDER_INPUTS
+        or path in ARTIFACT_SCHEMAS
+        or path.startswith(
+            (EVENTS_PREFIX, SOURCES_PREFIX, PENDING_PREFIX, WORKSTREAMS_PREFIX)
+        )
+        for _, path in changes
+    )
+
+
+def check_log_projection(
+    changes: list[tuple[str, str]], staged_root: Path
+) -> list[str]:
+    """The staged log.md must byte-equal the kit renderer's output over
+    the staged content tree."""
+    relevant = any(
+        path in LOG_RENDER_INPUTS or path.startswith(EVENTS_PREFIX)
+        for _, path in changes
+    )
+    if not relevant:
+        return []
+    for status, path in changes:
+        if path == LOG_PATH and status == "D":
+            return [f"{LOG_PATH} is a generated projection: deletion is not allowed"]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(KIT_SCRIPTS / "wiki-render.py"),
+            "log",
+            "--wiki",
+            str(staged_root),
+            "--events-dir",
+            str(staged_root / EVENTS_PREFIX.rstrip("/")),
+            "--epoch-file",
+            str(staged_root / EPOCH_PATH),
+            "--legacy-file",
+            str(staged_root / LEGACY_PATH),
+            "--quarantine-file",
+            str(staged_root / QUARANTINE_PATH),
+            "--output",
+            str(staged_root / LOG_PATH),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        if "does not match rendered output" in detail:
+            return [
+                f"{LOG_PATH} is generated - staged content does not match "
+                "the kit renderer's output over the staged tree; run the "
+                "renderer and re-stage"
+            ]
+        return [
+            f"{LOG_PATH} projection check could not run against the staged "
+            f"tree (renderer failed, not a mismatch): {detail}"
+        ]
+    return []
+
+
+def check_legacy_immutable(changes: list[tuple[str, str]]) -> list[str]:
+    errors = []
+    for status, path in changes:
+        if path != LEGACY_PATH:
+            continue
+        if head_text(path) is None:
+            continue  # initial creation is the one allowed write
+        verb = {"M": "modified", "D": "deleted", "R": "renamed", "C": "copied"}.get(
+            status, f"changed ({status})"
+        )
+        errors.append(f"{LEGACY_PATH} is the frozen pre-epoch record: it was {verb}")
+    return errors
+
+
+def check_event_immutability(changes: list[tuple[str, str]]) -> list[str]:
+    errors = []
+    for status, path in changes:
+        if not path.startswith(EVENTS_PREFIX):
+            continue
+        if status == "A":
+            continue
+        verb = {"M": "modified", "D": "deleted", "R": "renamed", "C": "copied"}.get(
+            status, f"changed ({status})"
+        )
+        errors.append(
+            f"events are immutable: {path} was {verb} - corrections are "
+            "new events, never edits"
+        )
+    return errors
+
+
+def check_added_events(
+    changes: list[tuple[str, str]], staged_root: Path
+) -> list[str]:
+    """Validate added events with the kit's validator and schema registry.
+
+    The registry lives in the kit checkout, not the wiki repo, so the
+    old staged-schema property (schema + event staged together validate
+    against each other) no longer applies; the enforcement contract doc
+    records that boundary.
+    """
+    added = [
+        path
+        for status, path in changes
+        if status == "A" and path.startswith(EVENTS_PREFIX) and path.endswith(".json")
+    ]
+    errors = []
+    for path in added:
+        try:
+            event = json.loads((staged_root / path).read_text())
+        except json.JSONDecodeError as exc:
+            errors.append(f"{path}: not valid JSON ({exc})")
+            continue
+        event_type = event.get("event_type", "")
+        try:
+            if event_type == wiki_event.EventType.GARDEN_APPLY:
+                wiki_event.validate_garden_apply_event(event)
+            elif event_type == wiki_event.EventType.HANDOFF:
+                wiki_event.validate_event(event)
+                # 'applied' is schema-valid only for legacy store files;
+                # new handoffs are always pending_garden - disposition is
+                # a garden-apply event.
+                if event.get("status") != wiki_event.HandoffStatus.PENDING_GARDEN:
+                    errors.append(
+                        f"{path}: added handoff events must have status "
+                        f"'{wiki_event.HandoffStatus.PENDING_GARDEN}' - "
+                        f"got '{event.get('status')}' ('applied' is a "
+                        "deprecated legacy value)"
+                    )
+                    continue
+                wiki_event.reject_placeholder_blockers(event)
+            else:
+                errors.append(f"{path}: unknown event_type '{event_type}'")
+                continue
+        except wiki_event.ValidationError as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
+
+
+def check_pending_projection(
+    changes: list[tuple[str, str]], staged_root: Path
+) -> list[str]:
+    """Staged pending files must match the pending builder's output over
+    the staged tree (the commit-time coverage recon 03 found missing)."""
+    relevant = any(
+        path.startswith((EVENTS_PREFIX, SOURCES_PREFIX, PENDING_PREFIX))
+        for _, path in changes
+    )
+    if not relevant:
+        return []
+    events_dir = staged_root / EVENTS_PREFIX.rstrip("/")
+    if not events_dir.is_dir():
+        return []  # nothing event-shaped staged yet (pre-init tree)
+    try:
+        mismatches = wiki_event.pending_mismatch(
+            events_dir=events_dir,
+            sources_dir=staged_root / SOURCES_PREFIX.rstrip("/"),
+            index_path=staged_root / "wiki" / "pending" / "index.json",
+            latest_path=staged_root / "wiki" / "pending" / "latest.md",
+        )
+    except wiki_event.ValidationError as exc:
+        return [f"pending projection check failed to run: {exc}"]
+    return [
+        f"wiki/pending is generated - {mismatch}; run the pending builder "
+        "and re-stage"
+        for mismatch in mismatches
+    ]
+
+
+def check_staged_artifacts(
+    changes: list[tuple[str, str]], staged_root: Path
+) -> list[str]:
+    """Staged integrity artifacts validate against their schemas (the
+    same-commit artifact-schema gap from recon 03, restated for the
+    kit's registry-in-kit layout)."""
+    errors = []
+    for status, path in changes:
+        schema_name = ARTIFACT_SCHEMAS.get(path)
+        if schema_name is None or status == "D":
+            continue
+        try:
+            instance = json.loads((staged_root / path).read_text())
+        except json.JSONDecodeError as exc:
+            errors.append(f"{path}: not valid JSON ({exc})")
+            continue
+        try:
+            wiki_event.validate_artifact(instance, schema_name, path)
+        except wiki_event.ValidationError as exc:
+            errors.append(str(exc))
+    return errors
+
+
+def check_workstreams(
+    changes: list[tuple[str, str]], staged_root: Path
+) -> list[str]:
+    touched = any(
+        path.startswith(WORKSTREAMS_PREFIX) and path.endswith(".md")
+        for _, path in changes
+    )
+    if not touched:
+        return []
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(KIT_SCRIPTS / "validate-workstreams.py"),
+            "--workstreams-dir",
+            str(staged_root / "workstreams"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return [f"validate-workstreams failed:\n{result.stderr.strip()}"]
+    return []
+
+
+def main() -> int:
+    repo_root()  # fail early with git's own message when not in a repo
+    changes = staged_changes()
+    errors = []
+    if materialization_relevant(changes):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Materialize the staged tree once; every staged-tree check
+            # runs against exactly the content that would be committed.
+            git("checkout-index", "-a", f"--prefix={tmp}/")
+            staged_root = Path(tmp)
+            errors += check_log_projection(changes, staged_root)
+            errors += check_added_events(changes, staged_root)
+            errors += check_pending_projection(changes, staged_root)
+            errors += check_staged_artifacts(changes, staged_root)
+            errors += check_workstreams(changes, staged_root)
+    errors += check_legacy_immutable(changes)
+    errors += check_event_immutability(changes)
+    if errors:
+        print("pre-commit: blocked by wiki integrity checks:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        print(
+            "(git commit --no-verify bypasses, but the rules still apply)",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
