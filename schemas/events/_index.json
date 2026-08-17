@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "event_types": {
+    "handoff": {
+      "v1": "events/handoff-v1.schema.json",
+      "v2": "events/handoff-v2.schema.json",
+      "latest": "v2"
+    },
+    "garden-apply": {
+      "v1": "events/garden-apply-v1.schema.json",
+      "latest": "v1"
+    }
+  },
+  "common_types": "common/types.json"
+}

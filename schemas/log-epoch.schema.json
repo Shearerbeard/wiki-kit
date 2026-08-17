@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/log-epoch.schema.json",
+  "title": "Log render epoch configuration",
+  "description": "Boundary configuration for the log.md projection. render_epoch_start is the only load-bearing field: entries at or before it live verbatim in wiki/log-legacy.md; the renderer renders events strictly after it. The other fields are validated annotation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "render_epoch_start"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "render_epoch_start": {
+      "$ref": "common/types.json#/$defs/timestamp_utc"
+    },
+    "legacy_epoch_end": {
+      "$ref": "common/types.json#/$defs/timestamp_utc"
+    },
+    "event_epoch_start": {
+      "$ref": "common/types.json#/$defs/timestamp_utc"
+    },
+    "legacy_epoch_entries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "note": {
+      "type": "string"
+    },
+    "render_note": {
+      "type": "string"
+    }
+  }
+}

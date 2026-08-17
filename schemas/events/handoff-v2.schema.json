@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/events/handoff-v2.schema.json",
+  "title": "Session handoff event (v2)",
+  "description": "v2 de-overloads the v1 envelope: `repo` names which repository the branch/sha describe. The v1 envelope field nominally described the deployment's primary repo but recorded whichever repo the session worked in.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "timestamp_utc",
+    "tool",
+    "repo",
+    "sources",
+    "proposed_workstreams",
+    "summary",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "event_id": {
+      "$ref": "../common/types.json#/$defs/uuidv7"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["handoff"]
+    },
+    "timestamp_utc": {
+      "$ref": "../common/types.json#/$defs/timestamp_utc"
+    },
+    "tool": {
+      "type": "string",
+      "enum": ["claude-code", "opencode", "codex", "manual"]
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "branch", "sha"],
+      "properties": {
+        "name": {
+          "$ref": "../common/types.json#/$defs/slug"
+        },
+        "branch": {
+          "$ref": "../common/types.json#/$defs/non_empty_string"
+        },
+        "sha": {
+          "$ref": "../common/types.json#/$defs/git_sha"
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "$ref": "../common/types.json#/$defs/non_empty_string"
+          },
+          "kind": {
+            "$ref": "../common/types.json#/$defs/slug"
+          },
+          "sha256": {
+            "$ref": "../common/types.json#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "proposed_workstreams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "relationship", "proposed_action"],
+        "properties": {
+          "name": {
+            "$ref": "../common/types.json#/$defs/slug"
+          },
+          "relationship": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "related",
+              "candidate_new",
+              "candidate_parent_theme",
+              "scope_widening"
+            ]
+          },
+          "proposed_action": {
+            "$ref": "../common/types.json#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "summary": {
+      "$ref": "../common/types.json#/$defs/non_empty_string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending_garden", "applied"],
+      "description": "pending_garden = awaiting garden review. applied = DEPRECATED, legacy only (kept so the status enum matches the Python HandoffStatus contract; no v2 event has ever carried it). Current code never writes it, and pre-commit rejects added handoff events that carry it."
+    },
+    "workstream_state": {
+      "$ref": "../workstream-state.json"
+    }
+  }
+}

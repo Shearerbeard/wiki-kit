@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/workstream-state.json",
+  "title": "Workstream session state",
+  "description": "Optional fragment carrying the full session state for a workstream. Not required — events without it remain valid for Phase B/C/D compatibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "current_state": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "what_was_done": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "next": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "continuation_context": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

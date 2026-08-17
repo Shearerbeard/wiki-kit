@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/events/handoff-v1.schema.json",
+  "title": "Session handoff event (v1 legacy format)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "timestamp_utc",
+    "tool",
+    "aura",
+    "sources",
+    "proposed_workstreams",
+    "summary",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "../common/types.json#/$defs/uuidv7"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["handoff"]
+    },
+    "timestamp_utc": {
+      "$ref": "../common/types.json#/$defs/timestamp_utc"
+    },
+    "tool": {
+      "type": "string",
+      "enum": ["claude-code", "opencode", "codex", "manual"]
+    },
+    "aura": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "sha"],
+      "properties": {
+        "branch": {
+          "$ref": "../common/types.json#/$defs/non_empty_string"
+        },
+        "sha": {
+          "$ref": "../common/types.json#/$defs/git_sha"
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "$ref": "../common/types.json#/$defs/non_empty_string"
+          },
+          "kind": {
+            "$ref": "../common/types.json#/$defs/slug"
+          },
+          "sha256": {
+            "$ref": "../common/types.json#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "proposed_workstreams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "relationship", "proposed_action"],
+        "properties": {
+          "name": {
+            "$ref": "../common/types.json#/$defs/slug"
+          },
+          "relationship": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "related",
+              "candidate_new",
+              "candidate_parent_theme",
+              "scope_widening"
+            ]
+          },
+          "proposed_action": {
+            "$ref": "../common/types.json#/$defs/non_empty_string"
+          }
+        }
+      }
+    },
+    "summary": {
+      "$ref": "../common/types.json#/$defs/non_empty_string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending_garden", "applied"],
+      "description": "pending_garden = awaiting garden review. applied = DEPRECATED, legacy only: 6 pre-immutability handoff events had their status mutated in place before events became append-only; disposition now lives in garden-apply events. Current code never writes it, and pre-commit rejects added handoff events that carry it."
+    },
+    "workstream_state": {
+      "$ref": "../workstream-state.json"
+    }
+  }
+}

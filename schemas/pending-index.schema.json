@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/pending-index.schema.json",
+  "title": "Pending events index",
+  "description": "Generated projection of unreviewed pending handoff events (wiki/pending/index.json). repo facts are normalized across handoff schema versions (v1 envelope -> repo). Structural validation only: enum truth for tool/status/relationship lives in the event schemas, which validated these events before they entered the index.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "event_count",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "generated_at_utc": {
+      "$ref": "common/types.json#/$defs/timestamp_utc"
+    },
+    "event_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "timestamp_utc",
+          "event_path",
+          "summary",
+          "tool",
+          "repo",
+          "status",
+          "review_status",
+          "proposed_workstreams",
+          "sources",
+          "capture_manifests",
+          "questions"
+        ],
+        "properties": {
+          "event_id": {
+            "$ref": "common/types.json#/$defs/uuidv7"
+          },
+          "timestamp_utc": {
+            "$ref": "common/types.json#/$defs/timestamp_utc"
+          },
+          "event_path": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "summary": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "tool": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "repo": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "branch",
+              "sha"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "common/types.json#/$defs/slug"
+              },
+              "branch": {
+                "$ref": "common/types.json#/$defs/non_empty_string"
+              },
+              "sha": {
+                "$ref": "common/types.json#/$defs/git_sha"
+              }
+            }
+          },
+          "status": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "review_status": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "proposed_workstreams": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "relationship",
+                "proposed_action"
+              ],
+              "properties": {
+                "name": {
+                  "$ref": "common/types.json#/$defs/slug"
+                },
+                "relationship": {
+                  "$ref": "common/types.json#/$defs/non_empty_string"
+                },
+                "proposed_action": {
+                  "$ref": "common/types.json#/$defs/non_empty_string"
+                }
+              }
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "$ref": "common/types.json#/$defs/non_empty_string"
+                },
+                "kind": {
+                  "$ref": "common/types.json#/$defs/slug"
+                },
+                "sha256": {
+                  "$ref": "common/types.json#/$defs/sha256"
+                }
+              }
+            }
+          },
+          "capture_manifests": {
+            "type": "array",
+            "items": {
+              "$ref": "common/types.json#/$defs/non_empty_string"
+            }
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "common/types.json#/$defs/non_empty_string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

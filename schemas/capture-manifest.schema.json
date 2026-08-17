@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/capture-manifest.schema.json",
+  "title": "Source capture manifest",
+  "description": "Event-linked manifest written by wiki-event.py capture-sources next to the captured file copies (wiki/sources/<kind>/<year>/<month>/<event_id>/manifest.json). The sha256 sidecar files are verified in code, not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_path",
+    "captured_at_utc",
+    "captures"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "common/types.json#/$defs/uuidv7"
+    },
+    "event_path": {
+      "$ref": "common/types.json#/$defs/non_empty_string"
+    },
+    "captured_at_utc": {
+      "$ref": "common/types.json#/$defs/timestamp_utc"
+    },
+    "captures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "source_path",
+          "captured_path",
+          "sha256",
+          "size_bytes"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "common/types.json#/$defs/slug"
+          },
+          "source_path": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "captured_path": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "sha256": {
+            "$ref": "common/types.json#/$defs/sha256"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

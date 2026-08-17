@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiki-kit.local/schemas/quarantine.schema.json",
+  "title": "Event quarantine",
+  "description": "Known-corrupt store files excluded from projections by path. event_id is intentionally NOT the uuidv7 type: quarantined ids are corrupt by definition. Cross-field rules (path basename matches event_id, no duplicate ids, corrected_by exists in the store) are enforced in code by load_quarantine/load_events.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "quarantined"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "note": {
+      "type": "string"
+    },
+    "quarantined": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "path", "reason", "corrected_by"],
+        "properties": {
+          "event_id": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "path": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "reason": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          },
+          "corrected_by": {
+            "$ref": "common/types.json#/$defs/non_empty_string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$id": "https://wiki-kit.local/schemas/events/garden-apply-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Garden Apply Event v1",
+  "description": "Records that a garden/librarian process applied or rejected a handoff event. Immutable audit trail.",
+  "type": "object",
+  "required": ["event_id", "event_type", "schema_version", "timestamp_utc", "target_event_id", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "$ref": "../common/types.json#/$defs/uuidv7",
+      "description": "UUIDv7 ID for this garden-apply event"
+    },
+    "event_type": {
+      "type": "string",
+      "const": "garden-apply"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "timestamp_utc": {
+      "$ref": "../common/types.json#/$defs/timestamp_utc",
+      "description": "When the garden apply happened"
+    },
+    "target_event_id": {
+      "$ref": "../common/types.json#/$defs/uuidv7",
+      "description": "The handoff event being applied or rejected"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["applied", "applied-manually", "rejected", "superseded"]
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional human-readable note about the disposition"
+    },
+    "workstream": {
+      "$ref": "../common/types.json#/$defs/slug",
+      "description": "User-approved proposed workstream selected for an applied-manually disposition"
+    }
+  }
+}
