@@ -213,6 +213,23 @@ class WikiConfig:
         return self.tools.get(name, default)
 
 
+def contract_deny_rules(config: WikiConfig) -> list[str]:
+    """The Claude deny rules derived from [contract].protected: the ONE
+    derivation the installer writes, the doctor verifies, and
+    install-smoke asserts. 'CLAUDE.local.md' stays a bare name (matches
+    at any depth, covering linked worktrees); every other entry anchors
+    to the repo root."""
+    specifiers = [
+        rel if rel == "CLAUDE.local.md" else f"/{rel}"
+        for rel in config.contract.protected
+    ]
+    return [
+        f"{tool}({specifier})"
+        for specifier in specifiers
+        for tool in ("Write", "Edit", "NotebookEdit")
+    ]
+
+
 def _git_toplevel(start: Path) -> Path | None:
     result = subprocess.run(
         ["git", "-C", str(start), "rev-parse", "--show-toplevel"],

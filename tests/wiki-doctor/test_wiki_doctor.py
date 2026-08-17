@@ -451,9 +451,7 @@ class DoctorTest(unittest.TestCase):
             f'exec python3 "{KIT_ROOT / "scripts" / "pre-commit"}" "$@"\n'
         )
         hook.chmod(0o755)
-        rules = wiki_doctor.claude_rules(
-            wiki_doctor.contract_specifiers(self.ctx.config)
-        )
+        rules = wiki_doctor.contract_deny_rules(self.ctx.config)
         self.write(
             ".claude/settings.json",
             json.dumps({"permissions": {"deny": rules}}),

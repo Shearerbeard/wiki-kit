@@ -50,6 +50,7 @@ from wiki_config import (  # noqa: E402
     OVERLAY_FILE_NAME,
     ConfigError,
     WikiConfig,
+    contract_deny_rules,
     load_config,
 )
 
@@ -234,30 +235,9 @@ def install_hook(target: Path) -> None:
     note("✓ pre-commit hook wrapper installed")
 
 
-def claude_rules(specifiers: list[str]) -> list[str]:
-    return [
-        f"{tool}({specifier})"
-        for specifier in specifiers
-        for tool in ("Write", "Edit", "NotebookEdit")
-    ]
-
-
-def contract_specifiers(config: WikiConfig) -> list[str]:
-    """Wiki-repo-relative deny specifiers derived from [contract].protected.
-    'CLAUDE.local.md' stays a bare name (matches at any depth, covering
-    linked worktrees); every other entry anchors to the repo root."""
-    specifiers = []
-    for rel in config.contract.protected:
-        if rel == "CLAUDE.local.md":
-            specifiers.append(rel)
-        else:
-            specifiers.append(f"/{rel}")
-    return specifiers
-
-
 def merge_claude_settings(config: WikiConfig, written: list[Path]) -> None:
     settings_path = config.root / ".claude" / "settings.json"
-    rules = claude_rules(contract_specifiers(config))
+    rules = contract_deny_rules(config)
     settings = (
         json.loads(settings_path.read_text(encoding="utf-8"))
         if settings_path.exists()

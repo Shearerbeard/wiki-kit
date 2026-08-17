@@ -29,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from wiki_config import (  # noqa: E402
     ConfigError,
     WikiConfig,
+    contract_deny_rules,
     load_config,
     machine_path_violations,
     resolve_wiki_root,
@@ -409,26 +410,6 @@ def check_links(ctx: DoctorContext) -> CheckOutcome:
     return outcome(name, findings, f"{len(files)} markdown files checked")
 
 
-def claude_rules(specifiers: Sequence[str]) -> list[str]:
-    return [
-        f"{tool}({specifier})"
-        for specifier in specifiers
-        for tool in ("Write", "Edit", "NotebookEdit")
-    ]
-
-
-def contract_specifiers(config: WikiConfig) -> list[str]:
-    """Must stay the installer's derivation (wiki_install.py) so the two
-    read one contract the same way; install-smoke asserts the result."""
-    specifiers = []
-    for rel in config.contract.protected:
-        if rel == "CLAUDE.local.md":
-            specifiers.append(rel)
-        else:
-            specifiers.append(f"/{rel}")
-    return specifiers
-
-
 def check_install(ctx: DoctorContext) -> CheckOutcome:
     """Installer-owned state: the pre-commit hook symlink and the
     [contract]-derived Claude deny rules."""
@@ -468,7 +449,7 @@ def check_install(ctx: DoctorContext) -> CheckOutcome:
             else {}
         )
         deny = settings.get("permissions", {}).get("deny", [])
-        for rule in claude_rules(contract_specifiers(ctx.config)):
+        for rule in contract_deny_rules(ctx.config):
             if rule not in deny:
                 findings.append(
                     fail(
