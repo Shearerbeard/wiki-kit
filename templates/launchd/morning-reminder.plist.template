@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{KIT_ROOT}}/scripts/morning-reminder.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{WIKI_ROOT}}</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>{{HOUR}}</integer>
+        <key>Minute</key>
+        <integer>{{MINUTE}}</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/morning-reminder-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/morning-reminder-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{PATH}}</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>WIKI_DIR</key>
+        <string>{{WIKI_ROOT}}</string>
+        <key>WIKI_GIT_BIN</key>
+        <string>{{GIT_BIN}}</string>
+        <key>WIKI_NOTIFIER_BIN</key>
+        <string>{{NOTIFIER_BIN}}</string>
+        <key>WIKI_NIGHT_REPORT_DIR</key>
+        <string>{{NIGHT_REPORT_DIR}}</string>
+        <key>WIKI_NIGHT_COMMIT_PREFIX</key>
+        <string>{{NIGHT_COMMIT_PREFIX}}</string>
+    </dict>
+</dict>
+</plist>

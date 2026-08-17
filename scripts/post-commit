@@ -1,0 +1,87 @@
+#!/bin/bash
+# Git post-commit hook for a companion repo — writes a git-state snapshot
+# and the workspace topology into the repo's internal-docs outbox.
+# Works for commits from any tool.
+#
+# Required env, rendered by the dock wiring when it installs the hook
+# (K3); never defaulted here — a machine layout is config, not a guess:
+#   WIKI_KIT_ROOT      kit checkout root (locates scripts/)
+#   WIKI_ROOT          wiki repo root (holds wiki.toml)
+#   WIKI_DOCS_SUBPATH  outbox subpath inside this repo (companion
+#                      docs_subpath, knob 14)
+#
+# Failure posture: fail loud on stderr, exit 0 — a misconfigured hook
+# reports itself but never blocks or dirties a commit (the pre-kit hook
+# swallowed topology failures the same way).
+
+set -euo pipefail
+
+fail() {
+  echo "post-commit: $*" >&2
+  exit 0
+}
+
+[ -n "${WIKI_KIT_ROOT:-}" ] || fail "WIKI_KIT_ROOT is not set; the dock wiring must render it"
+[ -n "${WIKI_ROOT:-}" ] || fail "WIKI_ROOT is not set; the dock wiring must render it"
+[ -n "${WIKI_DOCS_SUBPATH:-}" ] || fail "WIKI_DOCS_SUBPATH is not set; the dock wiring must render it"
+
+MAIN_REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+OUTBOX="$MAIN_REPO/$WIKI_DOCS_SUBPATH"
+STATE_FILE="$OUTBOX/git-state.md"
+
+mkdir -p "$OUTBOX"
+
+# 1. Git state (quick, single-branch snapshot)
+cat > "$STATE_FILE" <<EOF
+# Git State — $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+**Branch:** $(GIT_OPTIONAL_LOCKS=0 git branch --show-current)
+**Last commit:** $(GIT_OPTIONAL_LOCKS=0 git log -1 --oneline)
+**Changed files:**
+$(GIT_OPTIONAL_LOCKS=0 git diff HEAD~1 --name-only 2>/dev/null | head -20 || true)
+
+**Recent commits (last 5):**
+$(GIT_OPTIONAL_LOCKS=0 git log --oneline -5)
+EOF
+
+# 2. Workspace topology (full view — all worktrees, branches, tickets).
+#    generate-topology takes explicit args only; they come from the wiki's
+#    config for the companion whose local checkout is this repo. Errors
+#    print (loud) but never propagate into the commit's exit status.
+python3 - "$WIKI_KIT_ROOT" "$WIKI_ROOT" "$MAIN_REPO" "$WIKI_DOCS_SUBPATH" <<'PY' || true
+import subprocess
+import sys
+from pathlib import Path
+
+kit_root, wiki_root, main_repo, docs_subpath = sys.argv[1:5]
+sys.path.insert(0, str(Path(kit_root) / "scripts"))
+from wiki_config import load_config
+
+config = load_config(Path(wiki_root))
+repo = Path(main_repo).resolve()
+companion = next(
+    (
+        c
+        for c in config.companions.values()
+        if c.path is not None and c.path.resolve() == repo
+    ),
+    None,
+)
+if companion is None:
+    sys.exit(
+        f"post-commit: no companion in {wiki_root}/wiki.local.toml has "
+        f"path {repo}; topology not generated"
+    )
+args = [
+    sys.executable,
+    str(Path(kit_root) / "scripts" / "generate-topology.py"),
+    "--repo", str(repo),
+    "--base-branch", companion.base_branch,
+    "--output", str(repo / docs_subpath / "workspace-topology.md"),
+]
+if companion.ticket_regex is not None:
+    args += ["--ticket-regex", companion.ticket_regex]
+if companion.branch_glob is not None:
+    args += ["--branch-glob", companion.branch_glob]
+sys.exit(subprocess.run(args).returncode)
+PY

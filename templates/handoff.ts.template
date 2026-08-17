@@ -1,0 +1,51 @@
+// OpenCode session.idle handoff plugin — writes a compact handoff file
+// after each completed agent turn. Fingerprinted to avoid redundant writes.
+// Template: the dock wiring (K3) renders {{DOCS_SUBPATH}} from the
+// companion's docs_subpath and installs the result into the companion
+// repo's .opencode/plugins/.
+
+import { writeFile, readFile, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
+
+const HANDOFF_PATH = "{{DOCS_SUBPATH}}/opencode-handoff.md";
+let lastHash = "";
+
+export default async (ctx: any) => ({
+  event: async ({ event }: { event: any }) => {
+    if (event.type !== "session.idle" && event.properties?.status?.type !== "idle") return;
+
+    const sessionId = event.properties?.session?.id ?? event.properties?.sessionId;
+    if (!sessionId) return;
+
+    try {
+      const branch = await ctx.$`git branch --show-current`.text();
+      const lastCommit = await ctx.$`git log -1 --oneline`.text();
+      const recentCommits = await ctx.$`git log --oneline -5`.text();
+      const changedFiles = await ctx.$`git diff --name-only HEAD~1`.text().catch(() => "");
+
+      const content = [
+        `# OpenCode Handoff — ${new Date().toISOString()}`,
+        "",
+        `**Session:** ${sessionId}`,
+        `**Branch:** ${branch.trim()}`,
+        `**Last commit:** ${lastCommit.trim()}`,
+        "",
+        "**Recent commits:**",
+        ...recentCommits.trim().split("\n").map((l: string) => `- ${l}`),
+        "",
+        changedFiles.trim() ? "**Changed files:**" : "",
+        ...changedFiles.trim().split("\n").filter(Boolean).map((l: string) => `- ${l}`),
+      ].join("\n");
+
+      const hash = createHash("md5").update(content).digest("hex");
+      if (hash === lastHash) return;
+
+      const tmpPath = `${HANDOFF_PATH}.tmp`;
+      await writeFile(tmpPath, content, "utf8");
+      await rename(tmpPath, HANDOFF_PATH);
+      lastHash = hash;
+    } catch {
+      // Non-fatal — don't crash the session for handoff writes
+    }
+  },
+});
