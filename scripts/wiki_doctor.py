@@ -30,11 +30,13 @@ from wiki_config import (  # noqa: E402
     ConfigError,
     WikiConfig,
     contract_deny_rules,
+    git_hooks_dir,
     load_config,
     machine_path_violations,
     resolve_wiki_root,
 )
 from wiki_event import (  # noqa: E402
+    ValidationError,
     load_json,
     pending_mismatch,
     sha256_file,
@@ -209,7 +211,7 @@ def check_render_log(ctx: DoctorContext) -> CheckOutcome:
             quarantine_path=root / "wiki" / "quarantine.json",
         )
         current = (root / "wiki" / "log.md").read_text(encoding="utf-8")
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, ValidationError) as exc:
         return outcome(name, [fail(name, str(exc))])
     if rendered != current:
         return outcome(
@@ -271,18 +273,26 @@ def check_repo_names(ctx: DoctorContext) -> CheckOutcome:
         for companion in ctx.config.companions.values()
         if companion.github
     )
+    gh_missing = False
     for path in workstream_validation_files(ctx.repo_root):
-        fm, _ = parse_workstream_file(path)
+        try:
+            fm, _ = parse_workstream_file(path)
+        except FrontmatterError:
+            continue  # check_validate_workstreams already reports this file
         repo = fm.get("repo", "").strip()
         if not repo or repo in seen:
             continue
         seen.add(repo)
-        result = subprocess.run(
-            ["gh", "api", "--cache", GH_CACHE, f"repos/{repo}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--cache", GH_CACHE, f"repos/{repo}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            gh_missing = True
+            break
         if result.returncode == 0:
             continue
         rel = repo_relative(path, ctx.repo_root)
@@ -308,6 +318,10 @@ def check_repo_names(ctx: DoctorContext) -> CheckOutcome:
                     rel,
                 )
             )
+    if gh_missing:
+        findings.append(
+            warn(name, "gh is not installed; repo names not verified")
+        )
     return outcome(name, findings, f"{len(seen)} repo(s) checked")
 
 
@@ -321,7 +335,7 @@ def check_pending_index(ctx: DoctorContext) -> CheckOutcome:
             index_path=root / "wiki" / "pending" / "index.json",
             latest_path=root / "wiki" / "pending" / "latest.md",
         )
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, KeyError, ValidationError) as exc:
         return outcome(name, [fail(name, str(exc))])
     findings = [
         fail(name, f"{mismatch}; run the pending builder") for mismatch in mismatches
@@ -411,20 +425,13 @@ def check_links(ctx: DoctorContext) -> CheckOutcome:
 
 
 def check_install(ctx: DoctorContext) -> CheckOutcome:
-    """Installer-owned state: the pre-commit hook symlink and the
+    """Installer-owned state: the pre-commit hook wrapper and the
     [contract]-derived Claude deny rules."""
     name = "install"
     findings: list[Finding] = []
     root = ctx.repo_root
     try:
-        raw = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        hooks = Path(raw) if Path(raw).is_absolute() else root / raw
-        hook = hooks / "pre-commit"
+        hook = git_hooks_dir(root) / "pre-commit"
         expected = SCRIPT_DIR / "pre-commit"
         if not hook.is_file():
             findings.append(

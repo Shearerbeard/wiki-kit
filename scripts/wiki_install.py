@@ -9,8 +9,9 @@ The kit repo holds machinery; this installer wires a TARGET wiki repo
   skeleton, an empty quarantine ledger, the pending and log projections,
   and - when the repo has no commits yet - an initial commit of exactly
   the files the installer wrote.
-- pre-commit hook: symlinked to the kit's `scripts/pre-commit` (the
-  mechanical provenance layer recon 03 found the old installer never
+- pre-commit hook: a generated wrapper pinning the installing
+  interpreter and exec-ing the kit's current `scripts/pre-commit` (the
+  mechanical provenance layer the pre-extraction installer never
   installed).
 - deny rules: derived from the deployment's own `[contract]` in
   `wiki.toml` - the single contract source the doctor and install-smoke
@@ -51,6 +52,7 @@ from wiki_config import (  # noqa: E402
     ConfigError,
     WikiConfig,
     contract_deny_rules,
+    git_hooks_dir,
     load_config,
 )
 
@@ -191,11 +193,7 @@ def ensure_skeleton(target: Path, written: list[Path]) -> None:
 
 
 def hooks_dir(target: Path) -> Path:
-    raw = run(["git", "-C", str(target), "rev-parse", "--git-path", "hooks"]).strip()
-    path = Path(raw)
-    if not path.is_absolute():
-        path = target / path
-    return path
+    return git_hooks_dir(target)
 
 
 HOOK_MARKER = "# wiki-kit pre-commit wrapper"
@@ -266,12 +264,16 @@ def initial_commit(target: Path, written: list[Path]) -> None:
     rels = sorted(
         str(path.relative_to(target)) for path in written if path.exists()
     )
-    tracked_projections = [
+    # wiki.toml rides along even when a hand-written one predated the
+    # install: the hook renders the staged tree through it, so an initial
+    # commit without it would block itself.
+    always_tracked = [
+        CONFIG_FILE_NAME,
         "wiki/log.md",
         "wiki/pending/index.json",
         "wiki/pending/latest.md",
     ]
-    for rel in tracked_projections:
+    for rel in always_tracked:
         if (target / rel).exists() and rel not in rels:
             rels.append(rel)
     if not rels:

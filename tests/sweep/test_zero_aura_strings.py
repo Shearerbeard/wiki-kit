@@ -58,14 +58,16 @@ SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".vale", "reports"
 
 
 def kit_files() -> list[Path]:
-    files = []
-    for path in KIT_ROOT.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue  # a symlink's "content" is its target's, checked once
-        if any(part in SKIP_DIRS for part in path.relative_to(KIT_ROOT).parts):
-            continue
-        files.append(path)
-    return files
+    # A symlink's "content" is its target's, checked once at the target.
+    return [
+        path
+        for path in KIT_ROOT.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and not any(
+            part in SKIP_DIRS for part in path.relative_to(KIT_ROOT).parts
+        )
+    ]
 
 
 def hits(path: Path) -> list[tuple[int, str]]:
@@ -73,11 +75,11 @@ def hits(path: Path) -> list[tuple[int, str]]:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return []  # binary; none of the machinery is binary today
-    found = []
-    for lineno, line in enumerate(text.splitlines(), 1):
-        if any(pattern.search(line) for pattern in FORBIDDEN):
-            found.append((lineno, line.strip()))
-    return found
+    return [
+        (lineno, line.strip())
+        for lineno, line in enumerate(text.splitlines(), 1)
+        if any(pattern.search(line) for pattern in FORBIDDEN)
+    ]
 
 
 def test_machinery_is_family_string_free() -> None:
@@ -119,8 +121,10 @@ def test_enclave_files_confine_hits_to_the_shim() -> None:
     )
     for rel in sorted(ENCLAVE - {"tests/sweep/test_zero_aura_strings.py"}):
         path = KIT_ROOT / rel
-        if not path.exists():
-            continue
+        assert path.exists(), (
+            f"enclave file {rel} is gone; update ENCLAVE rather than "
+            "silently skipping its confinement assertions"
+        )
         stray = [
             (lineno, line)
             for lineno, line in hits(path)

@@ -2,12 +2,14 @@
 """Pre-commit hook for a wiki repo: mechanical enforcement of the
 provenance rules over staged content.
 
-The kit installer symlinks this file into the wiki repo's git hooks dir.
-Machinery (renderer, validator, schemas) runs from the KIT checkout this
-file resolves to; content comes from the STAGED tree of the wiki repo
-the commit is happening in. The enforcement contract, including what
-this hook does and does not cover, is docs/enforcement-contract.md in
-the kit repo.
+The kit installer wires this into the wiki repo's git hooks dir as a
+generated wrapper that pins the installing interpreter and exec's this
+file from the kit checkout (a plain symlink would run under whatever
+python3 PATH resolves, which may lack jsonschema). Machinery (renderer,
+validator, schemas) runs from the KIT checkout; content comes from the
+STAGED tree of the wiki repo the commit is happening in. The
+enforcement contract, including what this hook does and does not cover,
+is docs/enforcement-contract.md in the kit repo.
 
 Checks, on staged content only:
 1. wiki/log.md is a generated projection: whenever it or any renderer
@@ -28,9 +30,10 @@ Checks, on staged content only:
 7. If anything under workstreams/ is staged, the workstream validator
    must pass over the staged tree.
 
-Installed by the kit installer (scripts/install.sh). Manual form, from
-the wiki repo root:
-  ln -sf <kit>/scripts/pre-commit "$(git rev-parse --git-path hooks)/pre-commit"
+Installed by the kit installer (scripts/install.sh), which generates
+the wrapper; there is no supported manual symlink form, because the
+doctor verifies the wrapper shape and a symlink would not pin an
+interpreter that can import jsonschema.
 
 Bypass for emergencies: git commit --no-verify (the rules still apply;
 you are accountable for the bypass).
@@ -58,6 +61,8 @@ EVENTS_PREFIX = "wiki/events/"
 SOURCES_PREFIX = "wiki/sources/"
 PENDING_PREFIX = "wiki/pending/"
 WORKSTREAMS_PREFIX = "workstreams/"
+# --no-renames decomposes R/C into D+A, so only M and D reach the maps.
+STATUS_VERBS = {"M": "modified", "D": "deleted"}
 LOG_RENDER_INPUTS = {LOG_PATH, LEGACY_PATH, EPOCH_PATH, QUARANTINE_PATH}
 ARTIFACT_SCHEMAS = {
     QUARANTINE_PATH: "quarantine.schema.json",
@@ -170,9 +175,7 @@ def check_legacy_immutable(changes: list[tuple[str, str]]) -> list[str]:
             continue
         if head_text(path) is None:
             continue  # initial creation is the one allowed write
-        verb = {"M": "modified", "D": "deleted", "R": "renamed", "C": "copied"}.get(
-            status, f"changed ({status})"
-        )
+        verb = STATUS_VERBS.get(status, f"changed ({status})")
         errors.append(f"{LEGACY_PATH} is the frozen pre-epoch record: it was {verb}")
     return errors
 
@@ -184,9 +187,7 @@ def check_event_immutability(changes: list[tuple[str, str]]) -> list[str]:
             continue
         if status == "A":
             continue
-        verb = {"M": "modified", "D": "deleted", "R": "renamed", "C": "copied"}.get(
-            status, f"changed ({status})"
-        )
+        verb = STATUS_VERBS.get(status, f"changed ({status})")
         errors.append(
             f"events are immutable: {path} was {verb} - corrections are "
             "new events, never edits"
@@ -212,7 +213,7 @@ def check_added_events(
     errors = []
     for path in added:
         try:
-            event = json.loads((staged_root / path).read_text())
+            event = json.loads((staged_root / path).read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             errors.append(f"{path}: not valid JSON ({exc})")
             continue
@@ -284,7 +285,7 @@ def check_staged_artifacts(
         if schema_name is None or status == "D":
             continue
         try:
-            instance = json.loads((staged_root / path).read_text())
+            instance = json.loads((staged_root / path).read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             errors.append(f"{path}: not valid JSON ({exc})")
             continue

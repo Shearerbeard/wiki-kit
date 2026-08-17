@@ -145,6 +145,29 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertIn("differs", result.findings[0].message)
 
+    def test_render_log_reports_half_present_legacy_pair_as_finding(self) -> None:
+        """A ValidationError from the renderer is a FAIL finding, never a
+        doctor crash (Gate S probe finding)."""
+        self.write("wiki/log-legacy.md", "## [2026-06-04T16:30:00Z] Legacy\n")
+        (self.root / "wiki" / "events").mkdir(parents=True, exist_ok=True)
+        self.write("wiki/quarantine.json", json.dumps(
+            {"schema_version": 1, "note": "empty", "quarantined": []}
+        ))
+        self.write("wiki/log.md", "anything\n")
+
+        result = wiki_doctor.check_render_log(self.ctx)
+
+        self.assertTrue(result.failed)
+
+    def test_repo_names_skips_malformed_workstream_file(self) -> None:
+        """A FrontmatterError file is check_validate_workstreams' finding;
+        repo-names must not crash on it (Gate S probe finding)."""
+        self.write("workstreams/broken.md", "no frontmatter at all\n")
+
+        result = wiki_doctor.check_repo_names(self.ctx)
+
+        self.assertFalse(result.failed)
+
     def test_pending_index_detects_projection_mismatch(self) -> None:
         (self.root / "wiki" / "events").mkdir(parents=True, exist_ok=True)
         (self.root / "wiki" / "sources").mkdir(parents=True, exist_ok=True)

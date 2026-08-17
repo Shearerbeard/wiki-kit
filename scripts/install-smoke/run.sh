@@ -115,6 +115,11 @@ check_blocked() {
     cat /tmp/blocked.log >&2
     false
   fi
+  grep -q "wiki integrity checks" /tmp/blocked.log || {
+    echo "operation failed, but not via the integrity hook:" >&2
+    cat /tmp/blocked.log >&2
+    false
+  }
   record "$name" true
 }
 

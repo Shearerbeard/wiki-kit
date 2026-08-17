@@ -160,10 +160,10 @@ class WikiConfig:
     default_companion_name: str | None
     memory_index_line: str | None
     project_slug_rule: str
+    contract: Contract
+    schedule: Schedule
+    night: NightConventions
     companions: dict[str, Companion] = field(default_factory=dict)
-    contract: Contract = None  # type: ignore[assignment]
-    schedule: Schedule = None  # type: ignore[assignment]
-    night: NightConventions = None  # type: ignore[assignment]
     tools: dict[str, str] = field(default_factory=dict)
     extra_triage_dirs: tuple[str, ...] = ()
 
@@ -228,6 +228,22 @@ def contract_deny_rules(config: WikiConfig) -> list[str]:
         for specifier in specifiers
         for tool in ("Write", "Edit", "NotebookEdit")
     ]
+
+
+def git_hooks_dir(repo: Path) -> Path:
+    """The repo's effective hooks dir (honors core.hooksPath; git returns
+    a relative path like `.git/hooks` for a plain repo)."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--git-path", "hooks"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(
+            f"{repo} is not a git repository: {result.stderr.strip()}"
+        )
+    path = Path(result.stdout.strip())
+    return path if path.is_absolute() else repo / path
 
 
 def _git_toplevel(start: Path) -> Path | None:
@@ -533,14 +549,15 @@ def _config_as_json(config: WikiConfig) -> dict:
             "commit_prefix": config.night.commit_prefix,
         },
         "tools": config.tools,
-        "triage_project_dirs": list(config.triage_project_dirs())
-        if all(
-            companion.path is not None
-            for companion in config.companions.values()
-            if companion.memory_triage
-        )
-        else None,
+        "triage_project_dirs": _triage_dirs_or_none(config),
     }
+
+
+def _triage_dirs_or_none(config: WikiConfig) -> list[str] | None:
+    try:
+        return list(config.triage_project_dirs())
+    except ConfigError:
+        return None  # print-config stays usable; the doctor reports the gap
 
 
 def main(argv: list[str] | None = None) -> int:
