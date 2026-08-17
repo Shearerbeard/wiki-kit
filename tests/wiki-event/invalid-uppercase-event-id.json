@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "event_id": "019733AA-BBCC-7D11-8A22-334455667788",
+  "event_type": "handoff",
+  "timestamp_utc": "2026-06-01T12:00:00Z",
+  "tool": "manual",
+  "aura": {
+    "branch": "main",
+    "sha": "4c0f549"
+  },
+  "sources": [
+    {
+      "kind": "plan",
+      "path": "claude-plans/example.md"
+    }
+  ],
+  "proposed_workstreams": [
+    {
+      "name": "wiki-system",
+      "relationship": "primary",
+      "proposed_action": "update"
+    }
+  ],
+  "summary": "Uppercase event_id must be rejected (schema pattern is lowercase).",
+  "status": "pending_garden"
+}

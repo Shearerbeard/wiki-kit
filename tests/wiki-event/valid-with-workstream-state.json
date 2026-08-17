@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "event_id": "019e937b-3f6a-773a-845d-f13a3ac36bf4",
+  "event_type": "handoff",
+  "timestamp_utc": "2026-06-04T12:00:00Z",
+  "tool": "manual",
+  "aura": {
+    "branch": "main",
+    "sha": "4c0f549"
+  },
+  "sources": [
+    {
+      "path": "docs/internal/example.md",
+      "kind": "plan"
+    }
+  ],
+  "proposed_workstreams": [
+    {
+      "name": "wiki-system",
+      "relationship": "primary",
+      "proposed_action": "update"
+    }
+  ],
+  "summary": "Event with full workstream_state",
+  "status": "pending_garden",
+  "workstream_state": {
+    "current_state": ["In progress", "Schema composition complete"],
+    "what_was_done": ["Created composed schemas", "Added SchemaCache class"],
+    "next": ["Implement E.5 test cases", "Rewrite handoff commands"],
+    "blockers": [],
+    "continuation_context": "Phase E.1-E.4 complete. Ready for E.5 tests."
+  }
+}

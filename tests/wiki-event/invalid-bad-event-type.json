@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "event_id": "019733aa-bbcc-7d11-8a22-334455667788",
+  "event_type": "garden_apply",
+  "timestamp_utc": "2026-06-01T12:00:00Z",
+  "tool": "manual",
+  "aura": {
+    "branch": "main",
+    "sha": "4c0f549"
+  },
+  "sources": [],
+  "proposed_workstreams": [
+    {
+      "name": "wiki-system",
+      "relationship": "primary",
+      "proposed_action": "update"
+    }
+  ],
+  "summary": "Invalid fixture with bad event_type enum.",
+  "status": "pending_garden"
+}
