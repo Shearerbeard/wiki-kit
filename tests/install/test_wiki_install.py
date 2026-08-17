@@ -131,6 +131,122 @@ def test_install_around_existing_content(tmp_path: Path) -> None:
     assert (target / "CLAUDE.local.md").exists()
 
 
+def test_install_preserves_preexisting_log_file(tmp_path: Path) -> None:
+    """Gate A blocking finding: a file already at wiki/log.md is the
+    owner's content; install must neither overwrite nor commit it."""
+    target = tmp_path / "vault-wiki"
+    (target / "wiki").mkdir(parents=True)
+    (target / "wiki" / "log.md").write_text("# My precious note\n")
+
+    result = run_install(target)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+    assert (target / "wiki" / "log.md").read_text() == "# My precious note\n"
+    assert "left in place" in result.stdout
+    tracked = git(target, "ls-files").splitlines()
+    assert "wiki/log.md" not in tracked
+    # The rest of the boot still lands.
+    assert "wiki/pending/index.json" in tracked
+    assert (target / "CLAUDE.local.md").exists()
+
+
+def test_commit_with_nonempty_pending_passes_the_hook(tmp_path: Path) -> None:
+    """Gate A blocking finding: the pending check must agree with the
+    CLI's own build-pending output across process boundaries (the
+    repo-relative vs absolute event-path asymmetry)."""
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    sha = git(target, "rev-parse", "--short", "HEAD").strip()
+    subprocess.run(
+        [
+            sys.executable,
+            str(KIT_ROOT / "scripts" / "wiki-event.py"),
+            "new-handoff",
+            "--wiki",
+            str(target),
+            "--tool",
+            "manual",
+            "--summary",
+            "pending-commit regression",
+            "--repo-name",
+            "blank-wiki",
+            "--repo-branch",
+            "main",
+            "--repo-sha",
+            sha,
+            "--workstream",
+            "pending-check:candidate_new",
+            "--what-was-done",
+            "wrote an event",
+            "--next",
+            "garden it later",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(KIT_ROOT / "scripts" / "wiki-render.py"),
+            "log",
+            "--wiki",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git(target, "add", "-A")
+    commit = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "event with pending non-empty",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert commit.returncode == 0, commit.stderr
+
+
+def test_hook_rejects_non_json_event_addition(tmp_path: Path) -> None:
+    """Gate A minor finding: non-JSON files under the store (other than
+    the installer's .gitkeep) are an unvalidatable smuggle."""
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    stray = target / "wiki" / "events" / "note.txt"
+    stray.write_text("not an event\n")
+    git(target, "add", "wiki/events/note.txt")
+    commit = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "smuggle",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert commit.returncode != 0
+    assert "only .json event files" in commit.stderr
+
+
 def test_existing_repo_with_history_gets_no_new_commit(tmp_path: Path) -> None:
     target = tmp_path / "history-wiki"
     target.mkdir()

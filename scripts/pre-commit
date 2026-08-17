@@ -117,20 +117,31 @@ def materialization_relevant(changes: list[tuple[str, str]]) -> bool:
     )
 
 
+def _event_json(path: str) -> bool:
+    return path.startswith(EVENTS_PREFIX) and path.endswith(".json")
+
+
 def check_log_projection(
     changes: list[tuple[str, str]], staged_root: Path
 ) -> list[str]:
     """The staged log.md must byte-equal the kit renderer's output over
-    the staged content tree."""
+    the staged content tree. Only real render inputs trigger it: a
+    .gitkeep under the events dir (the installer's dir-keeper) must not
+    force a check against files the commit never staged."""
     relevant = any(
-        path in LOG_RENDER_INPUTS or path.startswith(EVENTS_PREFIX)
-        for _, path in changes
+        path in LOG_RENDER_INPUTS or _event_json(path) for _, path in changes
     )
     if not relevant:
         return []
     for status, path in changes:
         if path == LOG_PATH and status == "D":
             return [f"{LOG_PATH} is a generated projection: deletion is not allowed"]
+    if not (staged_root / LOG_PATH).exists():
+        # No log.md in the staged index at all: the deployment has not
+        # committed a projection yet (an owner's untracked file may sit
+        # at that path), so there is no committed projection to be
+        # stale. The doctor reports the missing projection.
+        return []
     result = subprocess.run(
         [
             sys.executable,
@@ -205,12 +216,27 @@ def check_added_events(
     against each other) no longer applies; the enforcement contract doc
     records that boundary.
     """
-    added = [
-        path
-        for status, path in changes
-        if status == "A" and path.startswith(EVENTS_PREFIX) and path.endswith(".json")
-    ]
     errors = []
+    added = []
+    for status, path in changes:
+        if status != "A" or not path.startswith(EVENTS_PREFIX):
+            continue
+        if not path.endswith(".json"):
+            # .gitkeep is the installer's dir-keeper; anything else
+            # non-JSON under the store is an unvalidatable smuggle.
+            if Path(path).name != ".gitkeep":
+                errors.append(
+                    f"{path}: only .json event files may be added under "
+                    f"{EVENTS_PREFIX}"
+                )
+            continue
+        if (staged_root / path).is_symlink():
+            errors.append(
+                f"{path}: symlinks may not be added under {EVENTS_PREFIX} - "
+                "the store holds regular files only"
+            )
+            continue
+        added.append(path)
     for path in added:
         try:
             event = json.loads((staged_root / path).read_text(encoding="utf-8"))
@@ -249,7 +275,11 @@ def check_pending_projection(
     """Staged pending files must match the pending builder's output over
     the staged tree (the commit-time coverage recon 03 found missing)."""
     relevant = any(
-        path.startswith((EVENTS_PREFIX, SOURCES_PREFIX, PENDING_PREFIX))
+        _event_json(path)
+        or path.startswith(PENDING_PREFIX)
+        or (
+            path.startswith(SOURCES_PREFIX) and Path(path).name != ".gitkeep"
+        )
         for _, path in changes
     )
     if not relevant:

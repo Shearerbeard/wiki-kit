@@ -266,16 +266,11 @@ def initial_commit(target: Path, written: list[Path]) -> None:
     )
     # wiki.toml rides along even when a hand-written one predated the
     # install: the hook renders the staged tree through it, so an initial
-    # commit without it would block itself.
-    always_tracked = [
-        CONFIG_FILE_NAME,
-        "wiki/log.md",
-        "wiki/pending/index.json",
-        "wiki/pending/latest.md",
-    ]
-    for rel in always_tracked:
-        if (target / rel).exists() and rel not in rels:
-            rels.append(rel)
+    # commit without it would block itself. Everything else in the commit
+    # is exactly what this run wrote (`written`); pre-existing files at
+    # projection paths are the owner's content and stay uncommitted.
+    if CONFIG_FILE_NAME not in rels and (target / CONFIG_FILE_NAME).exists():
+        rels.append(CONFIG_FILE_NAME)
     if not rels:
         raise InstallError(
             "no commits and nothing installer-written to commit; the "
@@ -355,13 +350,43 @@ def install(target: Path, no_scheduler: bool) -> None:
     # build-pending stamps generated_at_utc, so an unconditional run would
     # dirty the tree on every reinstall; build only when the projection is
     # absent (the doctor owns staleness detection thereafter).
-    if not (target / "wiki" / "pending" / "index.json").exists():
+    pending_dir = target / "wiki" / "pending"
+    if not (pending_dir / "index.json").exists():
         kit_cli("wiki-event.py", "build-pending", "--wiki", str(target))
+        written.extend([pending_dir / "index.json", pending_dir / "latest.md"])
         note("✓ pending projection built")
     else:
         note("✓ pending projection exists, left in place")
-    kit_cli("wiki-render.py", "log", "--wiki", str(target))
-    note("✓ log projection rendered (deterministic; rewrite is byte-stable)")
+    # The log projection is rendered only where nothing pre-exists: a file
+    # already at wiki/log.md is the owner's content until it matches the
+    # store's projection (decision-4 non-destructive rule; the doctor
+    # reports the drift and regeneration is the owner's call).
+    log_path = target / "wiki" / "log.md"
+    if not log_path.exists():
+        kit_cli("wiki-render.py", "log", "--wiki", str(target))
+        written.append(log_path)
+        note("✓ log projection rendered")
+    else:
+        check = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_SCRIPTS / "wiki-render.py"),
+                "log",
+                "--wiki",
+                str(target),
+                "--check",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
+            note("✓ wiki/log.md matches the store projection")
+        else:
+            note(
+                "! wiki/log.md exists and differs from the store "
+                "projection; left in place (the doctor reports the drift; "
+                "regenerate when ready)"
+            )
     merge_claude_settings(config, written)
     initial_commit(target, written)
     render_orientation(config)

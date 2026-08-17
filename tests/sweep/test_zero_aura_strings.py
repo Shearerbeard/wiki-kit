@@ -54,7 +54,16 @@ PROVENANCE = {
     "docs/wiki-toml-schema.md",
 }
 
-SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".vale", "reports"}
+SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".vale",
+    ".review",  # staged review packets; gitignored, never shipped
+    "reports",
+}
 
 
 def kit_files() -> list[Path]:

@@ -4,8 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPORT_DIR="$KIT_DIR/reports/install-smoke"
-IMAGE_NAME="${IMAGE_NAME:-wiki-kit-install-smoke:2026-08-16}"
-CONTAINER_NAME="${CONTAINER_NAME:-wiki-kit-install-smoke-$(date -u +%Y%m%dT%H%M%SZ)}"
+# Knob 16: cosmetic naming derives from the repo, never a hardcode. The
+# kit's own harness has no deployment config to read at build time, so
+# the kit repo's directory name is the naming source here; a deployment
+# smoke (the heavy-canary stage) derives from its [wiki].name.
+KIT_NAME="$(basename "$KIT_DIR")"
+IMAGE_NAME="${IMAGE_NAME:-$KIT_NAME-install-smoke:2026-08-16}"
+CONTAINER_NAME="${CONTAINER_NAME:-$KIT_NAME-install-smoke-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -175,6 +180,12 @@ check_shell "new-handoff writes the first event" '
     --what-was-done "ran the install smoke handoff cycle" \
     --next "garden this event" &&
   ls wiki/events/*/*/*.json >/dev/null
+'
+check_shell "commit with a non-empty pending store passes the hook" '
+  cd "'"$FIXTURE"'" &&
+  python3 "'"$KIT"'/scripts/wiki-event.py" build-pending --wiki "'"$FIXTURE"'" &&
+  python3 "'"$KIT"'/scripts/wiki-render.py" log --wiki "'"$FIXTURE"'" &&
+  git add -A && git commit -q -m "smoke: event recorded, garden pending"
 '
 check_shell "garden apply routes the event into a workstream" '
   cd "'"$FIXTURE"'" &&

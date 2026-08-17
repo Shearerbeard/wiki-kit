@@ -7,3 +7,5 @@ __pycache__/
 .vale/
 # Docker install-smoke run artifacts.
 reports/install-smoke/
+# Staged review packets (board review dispatches).
+.review/

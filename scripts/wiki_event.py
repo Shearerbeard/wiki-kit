@@ -1222,8 +1222,22 @@ def pending_mismatch(
     neutralized index. A missing or unparseable projection file is a
     mismatch; a broken STORE (invalid events) raises instead — corruption
     is not staleness."""
-    events = load_events(events_dir)
-    expected = build_pending_index(events, sources_dir)
+    global _wiki_root
+    prior = _wiki_root
+    # Pin the root to the tree that owns the store when the store sits at
+    # the conventional <root>/wiki/events: the CLI writes repo-relative
+    # event paths into the index, so an unpinned rebuild would stamp
+    # absolute paths and report every non-empty pending store as drifted.
+    # A non-conventional layout (library callers on bare tmp trees) keeps
+    # the caller's own pin state; the prior pin is restored afterwards.
+    resolved_events = events_dir.resolve()
+    if resolved_events.name == "events" and resolved_events.parent.name == "wiki":
+        set_wiki_root(resolved_events.parent.parent)
+    try:
+        events = load_events(events_dir)
+        expected = build_pending_index(events, sources_dir)
+    finally:
+        _wiki_root = prior
     mismatches: list[str] = []
     current = None
     try:
