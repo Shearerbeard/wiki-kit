@@ -304,18 +304,67 @@ def test_hook_rejects_symlink_event_addition(tmp_path: Path) -> None:
     assert "symlink" in commit.stderr
 
 
-def test_hook_rejects_nested_or_nonempty_gitkeep(tmp_path: Path) -> None:
-    """The keeper exemption is exactly wiki/events/.gitkeep, empty and
-    regular; anything else non-JSON is rejected."""
+def test_hook_rejects_nested_empty_gitkeep(tmp_path: Path) -> None:
+    """The keeper exemption is exactly the top-level path: an empty
+    .gitkeep anywhere deeper is rejected on position alone."""
     target = tmp_path / "blank-wiki"
     assert run_install(target).returncode == 0
     events = target / "wiki" / "events"
     (events / "2099").mkdir()
-    (events / "2099" / ".gitkeep").write_text("smuggled content\n")
+    (events / "2099" / ".gitkeep").write_text("")
     git(target, "add", "wiki/events/2099/.gitkeep")
-    commit = _commit(target, "smuggle via nested gitkeep")
+    commit = _commit(target, "nested empty gitkeep")
     assert commit.returncode != 0
     assert "only .json event files" in commit.stderr
+
+
+def test_hook_rejects_nonempty_top_level_gitkeep(tmp_path: Path) -> None:
+    """The keeper exemption requires empty content: ADDING the exact path
+    with smuggled bytes is rejected on content alone. (Modifying the
+    installed keeper is separately blocked by event immutability, so the
+    untracked precondition is constructed with a --no-verify commit.)"""
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    keeper = target / "wiki" / "events" / ".gitkeep"
+    git(target, "rm", "-q", "--cached", "wiki/events/.gitkeep")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "untrack keeper (test precondition)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    keeper.write_text("smuggled content\n")
+    git(target, "add", "wiki/events/.gitkeep")
+    commit = _commit(target, "nonempty top-level gitkeep")
+    assert commit.returncode != 0
+    assert "only .json event files" in commit.stderr
+
+
+def test_install_raises_on_operational_renderer_failure(tmp_path: Path) -> None:
+    """A renderer failure that is not a projection mismatch fails the
+    install loudly instead of being reported as drift."""
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    event_dir = target / "wiki" / "events" / "2099" / "01"
+    event_dir.mkdir(parents=True)
+    (event_dir / "corrupt.json").write_text("{not json")
+
+    result = run_install(target)
+    assert result.returncode == 1
+    assert "failed to run" in result.stderr + result.stdout
 
 
 def test_explicit_path_build_agrees_with_checker(tmp_path: Path) -> None:
@@ -380,8 +429,8 @@ def test_smoke_image_names_are_repo_derived() -> None:
     prefix derives from the repo directory name."""
     text = (KIT_ROOT / "scripts" / "install-smoke" / "run.sh").read_text()
     assert 'KIT_NAME="$(basename "$KIT_DIR")"' in text
-    assert '${IMAGE_NAME:-$KIT_NAME-install-smoke' in text
-    assert '${CONTAINER_NAME:-$KIT_NAME-install-smoke' in text
+    assert "${IMAGE_NAME:-$KIT_NAME-install-smoke" in text
+    assert "${CONTAINER_NAME:-$KIT_NAME-install-smoke" in text
     assert "wiki-kit-install-smoke" not in text
 
 
