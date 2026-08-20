@@ -100,7 +100,7 @@
     "status": {
       "type": "string",
       "enum": ["pending_garden", "applied"],
-      "description": "pending_garden = awaiting garden review. applied = DEPRECATED, legacy only: 6 pre-immutability handoff events had their status mutated in place before events became append-only; disposition now lives in garden-apply events. Current code never writes it, and pre-commit rejects added handoff events that carry it."
+      "description": "pending_garden = awaiting garden review. applied = DEPRECATED, legacy only: early pre-immutability handoff events in the source deployment had their status mutated in place before events became append-only; disposition now lives in garden-apply events. Current code never writes it, and pre-commit rejects added handoff events that carry it."
     },
     "workstream_state": {
       "$ref": "../workstream-state.json"

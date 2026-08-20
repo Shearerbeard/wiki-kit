@@ -465,7 +465,7 @@ def check_install(ctx: DoctorContext) -> CheckOutcome:
                         settings_path,
                     )
                 )
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (OSError, ConfigError, json.JSONDecodeError) as exc:
         findings.append(fail(name, str(exc)))
     return outcome(name, findings, "hook and contract-derived deny rules checked")
 

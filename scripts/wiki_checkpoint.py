@@ -395,6 +395,10 @@ def command_status(args: argparse.Namespace) -> None:
                 "path": change.path,
                 "approved": change.path in approved,
                 "requires_adoption": requires_adoption,
+                # The machinery runs from the kit checkout (SCRIPT_DIR), never
+                # from the content repo: a generic deployment has no scripts/
+                # and need not be a uv project. The wiki root travels in the
+                # checkpoint state, so the emitted commands need no --wiki.
                 "approval_command": None
                 if change.path in approved or requires_adoption
                 else shlex.join(
@@ -402,8 +406,8 @@ def command_status(args: argparse.Namespace) -> None:
                         "uv",
                         "run",
                         "--project",
-                        os.fspath(root),
-                        os.fspath(root / "scripts" / "wiki_checkpoint.py"),
+                        os.fspath(SCRIPT_DIR.parent),
+                        os.fspath(SCRIPT_DIR / "wiki_checkpoint.py"),
                         "approve",
                         "--state-dir",
                         os.fspath(args.state_dir),
@@ -416,8 +420,8 @@ def command_status(args: argparse.Namespace) -> None:
                         "uv",
                         "run",
                         "--project",
-                        os.fspath(root),
-                        os.fspath(root / "scripts" / "wiki_checkpoint.py"),
+                        os.fspath(SCRIPT_DIR.parent),
+                        os.fspath(SCRIPT_DIR / "wiki_checkpoint.py"),
                         "adopt-handoffs",
                         "--state-dir",
                         os.fspath(args.state_dir),

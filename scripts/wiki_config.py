@@ -351,11 +351,11 @@ def _build_companion(name: str, table: dict, overlay_path: str | None) -> Compan
     return Companion(
         name=name,
         github=_string_or_none(table, "github", label),
-        base_branch=table.get("base_branch", "main"),
+        base_branch=_string_or_none(table, "base_branch", label) or "main",
         branch_glob=_string_or_none(table, "branch_glob", label),
         ticket_regex=_string_or_none(table, "ticket_regex", label),
         docs_subpath=_string_or_none(table, "docs_subpath", label),
-        display_label=table.get("display_label", name),
+        display_label=_string_or_none(table, "display_label", label) or name,
         posture=posture,
         memory_triage=memory_triage,
         path=Path(overlay_path).expanduser() if overlay_path else None,

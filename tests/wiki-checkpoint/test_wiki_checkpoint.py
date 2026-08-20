@@ -316,6 +316,34 @@ class WikiCheckpointTest(unittest.TestCase):
         argv = shlex.split(commands.pop())
         self.assertEqual(argv[-3:], ["--", *sorted(concurrent)])
 
+    def test_status_commands_invoke_the_kit_checkout(self) -> None:
+        # The machinery runs from the kit checkout; the content repo (the
+        # fixture root) carries no scripts/ and need not be a uv project.
+        result, _, error = self.preflight()
+        self.assertEqual((result, error), (0, ""))
+        path = "workstreams/pending-review.md"
+        (self.root / path).write_text("changed\n", encoding="utf-8")
+        concurrent = self.write_handoff()
+
+        result, output, error = self.command(
+            "status", "--state-dir", str(self.state_dir)
+        )
+
+        self.assertEqual((result, error), (0, ""))
+        changes = {item["path"]: item for item in json.loads(output)["changes"]}
+        kit_prefix = [
+            "uv",
+            "run",
+            "--project",
+            str(REPO_ROOT),
+            str(SCRIPT_DIR / "wiki_checkpoint.py"),
+        ]
+        approval_argv = shlex.split(changes[path]["approval_command"])
+        self.assertEqual(approval_argv[:5], kit_prefix)
+        self.assertNotIn(str(self.root), approval_argv[:5])
+        adoption_argv = shlex.split(changes[concurrent]["adoption_command"])
+        self.assertEqual(adoption_argv[:5], kit_prefix)
+
     def test_adoption_rejects_non_pending_handoff(self) -> None:
         result, _, error = self.preflight()
         self.assertEqual((result, error), (0, ""))

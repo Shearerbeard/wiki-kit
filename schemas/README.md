@@ -91,7 +91,7 @@ schema for their `event_type`, nothing else.
 Beyond the schema patterns, Python validation rejects any event id whose
 embedded UUIDv7 timestamp exceeds the validation wall clock plus
 `UUID7_MAX_CLOCK_SKEW_MS` (1 hour) - ids are generated, never hand-written,
-so a future-dated id is a fabrication (DECISIONS.md D10). Backfilled and
+so a future-dated id is a fabrication. Backfilled and
 correction events are unaffected: their ids postdate their declared
 `timestamp_utc`, not the wall clock.
 
@@ -128,8 +128,9 @@ disposition over a newer one. Query a single event directly:
 uv run scripts/wiki-event.py status <event-id>
 ```
 
-The handoff-status enum value `applied` is deprecated legacy: 6 pre-hook
-store files carry it from an in-place mutation (DECISIONS.md D10); the
+The handoff-status enum value `applied` is deprecated legacy: a handful of
+pre-immutability store files in the source deployment carry it from an
+in-place mutation (the kit's extraction ledger records the provenance); the
 pre-commit hook rejects it on added events.
 
 ## $ref format

@@ -121,6 +121,18 @@ class DoctorTest(unittest.TestCase):
         with self.assertRaises(wiki_doctor.ConfigError):
             wiki_doctor.load_config(self.root)
 
+    def test_companion_base_branch_must_be_a_string(self) -> None:
+        self.write(
+            "wiki.toml",
+            MINIMAL_CONFIG.replace(
+                'github = "acme/widget"',
+                'github = "acme/widget"\nbase_branch = 42',
+            ),
+        )
+
+        with self.assertRaises(wiki_doctor.ConfigError):
+            wiki_doctor.load_config(self.root)
+
     # -- projections -------------------------------------------------------
 
     def test_render_log_detects_stale_projection(self) -> None:
@@ -463,6 +475,16 @@ class DoctorTest(unittest.TestCase):
         messages = [finding.message for finding in result.findings]
         self.assertTrue(any("pre-commit hook" in message for message in messages))
         self.assertTrue(any("deny rule" in message for message in messages))
+
+    def test_install_check_on_non_git_root_reports_finding_not_traceback(self) -> None:
+        # No _init_git(): git_hooks_dir raises ConfigError, which must
+        # surface as a finding rather than abort the doctor run.
+        result = wiki_doctor.check_install(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertTrue(
+            any("not a git repository" in f.message for f in result.findings)
+        )
 
     def test_install_check_passes_after_wrapper_and_rules(self) -> None:
         self._init_git()
