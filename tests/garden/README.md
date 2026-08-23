@@ -3,7 +3,13 @@
 Canonical test data simulating 3 days of workstream progression for a
 fictional `acme-notes` wiki tracking a companion project called `widget`
 (github `acme/widget`, branches `alex/*`, engineer Alex).
-Apply with `run-tests.sh`, which gates each phase with commits for rollback.
+
+`run-tests.sh` builds a throwaway fixture wiki (kit installer plus the
+"before" workstreams in `baseline/`), applies the scenario fixtures to
+it, and runs the deterministic checks. It never touches the kit repo or
+any real wiki. Set `GARDEN_FIXTURE_DIR` to keep the fixture around for
+inspection. `test_run_tests_harness.py` runs the whole harness under
+pytest so CI catches breakage in the shell script itself.
 
 ## Scenarios
 
@@ -33,11 +39,13 @@ Tests that build-index.py --json flags this as a stale Next candidate.
 ### F: Archival protection
 Verifies parked streams are NEVER flagged for archival regardless of staleness.
 
-## Test Phases (gated by commits)
+## Harness phases
 
-Phase 0: Snapshot current state (rollback point)
+Phase 0: Install the throwaway fixture wiki and seed `baseline/` (the
+         "before" state the scenarios mutate)
 Phase 1: Apply scenario data (log entries + workstream updates)
-Phase 2: Run deterministic tests (Python scripts)
-Phase 3: Run LLM tests (claude -p /garden, claude -p /handoff)
-Phase 4: Validate LLM output
-Rollback: git checkout main -- . (or git stash)
+Phase 2: Run deterministic checks (validate-workstreams.py,
+         expected-checks.py --wiki <fixture>)
+
+LLM-phase testing (running /garden and /handoff for real) is out of
+scope for this harness; it happens against a live deployment.

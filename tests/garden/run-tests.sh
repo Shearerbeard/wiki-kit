@@ -1,8 +1,35 @@
 #!/bin/bash
+# Garden fixture harness. Builds a THROWAWAY fixture wiki (kit installer
+# plus the baseline/ workstreams), applies the scenario fixtures, and
+# runs the deterministic checks against that fixture. It never runs
+# against the kit repo and never against a real wiki.
+#
+# Environment:
+#   GARDEN_FIXTURE_DIR  Build the fixture wiki inside this directory and
+#                       leave it there (caller owns cleanup; the pytest
+#                       wrapper passes its tmp_path). Default: a fresh
+#                       mktemp -d, removed on exit.
+#
+# Requires a python3 that can import jsonschema (the installer's initial
+# commit runs the pre-commit hook). Running under `uv run` satisfies
+# this; so does plain pytest, which invokes the harness through the
+# project environment. No git identity is needed: the installer's
+# initial commit carries its own inline -c user.name/user.email, and the
+# pytest wrapper strips ambient git config to keep that guarantee tested.
 set -euo pipefail
 
-WIKI_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+KIT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -n "${GARDEN_FIXTURE_DIR:-}" ]; then
+  mkdir -p "$GARDEN_FIXTURE_DIR"
+  FIXTURE_ROOT="$(cd "$GARDEN_FIXTURE_DIR" && pwd)"
+else
+  FIXTURE_ROOT="$(mktemp -d)"
+  trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+fi
+
+WIKI_DIR="$FIXTURE_ROOT/fixture-wiki"
 WORKSTREAMS="$WIKI_DIR/workstreams"
 LOG_FILE="$WIKI_DIR/wiki/log.md"
 
@@ -15,14 +42,23 @@ pass() { echo -e "${GREEN}PASS${NC}: $1"; }
 fail() { echo -e "${RED}FAIL${NC}: $1"; exit 1; }
 info() { echo -e "${YELLOW}==== $1 ====${NC}"; }
 
-# ============================================================
-info "Phase 0: Pre-flight validation"
-# ============================================================
-python3 "$WIKI_DIR/scripts/validate-workstreams.py" --wiki "$WIKI_DIR" || fail "pre-flight validation"
-pass "existing workstream files valid"
+[ -e "$WIKI_DIR" ] && fail "$WIKI_DIR already exists; point GARDEN_FIXTURE_DIR at a clean directory"
 
-BEFORE_TREE=$(python3 "$WIKI_DIR/scripts/build-index.py" --wiki "$WIKI_DIR")
-BEFORE_ACTIVE=$(python3 "$WIKI_DIR/scripts/build-index.py" --wiki "$WIKI_DIR" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['active'])")
+# ============================================================
+info "Phase 0: Build the fixture wiki"
+# ============================================================
+"$KIT_DIR/scripts/install.sh" --wiki "$WIKI_DIR" --no-scheduler || fail "fixture install"
+pass "throwaway fixture wiki installed at $WIKI_DIR"
+
+mkdir -p "$WORKSTREAMS"
+BASELINE_FILES=("$TEST_DIR/baseline/"*.md)
+cp "${BASELINE_FILES[@]}" "$WORKSTREAMS/"
+echo "  Seeded: ${#BASELINE_FILES[@]} baseline workstreams"
+
+python3 "$KIT_DIR/scripts/validate-workstreams.py" --wiki "$WIKI_DIR" || fail "pre-flight validation"
+pass "baseline workstream files valid"
+
+BEFORE_ACTIVE=$(python3 "$KIT_DIR/scripts/build-index.py" --wiki "$WIKI_DIR" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['active'])")
 echo "Before: $BEFORE_ACTIVE active streams"
 echo ""
 
@@ -69,14 +105,14 @@ info "Phase 2: Deterministic validation"
 # ============================================================
 
 # Re-validate after changes
-python3 "$WIKI_DIR/scripts/validate-workstreams.py" --wiki "$WIKI_DIR" || fail "post-apply validation"
+python3 "$KIT_DIR/scripts/validate-workstreams.py" --wiki "$WIKI_DIR" || fail "post-apply validation"
 pass "all workstream files still valid after applying fixtures"
 
 # Run expected checks
-python3 "$TEST_DIR/expected-checks.py" || fail "expected checks"
+python3 "$TEST_DIR/expected-checks.py" --wiki "$WIKI_DIR" || fail "expected checks"
 pass "all expected checks passed"
 
-AFTER_ACTIVE=$(python3 "$WIKI_DIR/scripts/build-index.py" --wiki "$WIKI_DIR" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['active'])")
+AFTER_ACTIVE=$(python3 "$KIT_DIR/scripts/build-index.py" --wiki "$WIKI_DIR" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['active'])")
 echo ""
 echo "After: $AFTER_ACTIVE active streams (was $BEFORE_ACTIVE)"
 
@@ -84,8 +120,9 @@ echo "After: $AFTER_ACTIVE active streams (was $BEFORE_ACTIVE)"
 info "Phase 2 complete — deterministic tests passed"
 # ============================================================
 echo ""
-echo "Next steps:"
-echo "  1. Review the changes: git diff"
-echo "  2. If good, commit: git commit -am 'test: apply scenario fixtures'"
-echo "  3. Run LLM tests: claude -p 'Run /garden'"
-echo "  4. To rollback: git checkout -- workstreams/ wiki/"
+echo "Fixture wiki: $WIKI_DIR"
+if [ -n "${GARDEN_FIXTURE_DIR:-}" ]; then
+  echo "Kept for inspection (GARDEN_FIXTURE_DIR is set; cleanup is yours)."
+else
+  echo "Removed on exit; set GARDEN_FIXTURE_DIR to keep it for inspection."
+fi
