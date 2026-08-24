@@ -19,7 +19,8 @@ COMPLETE dock. The legacy channel (env variable named in
 read-only until an adoption ruling retires it.
 
 The overlay is allowlisted, not open: it may set exactly
-`companions.<name>.path`, `[memory.triage].extra_dirs`, and `[tools].*`.
+`companions.<name>.path`, `[memory.triage].extra_dirs`,
+`[memory].projects_root`, and `[tools].*`.
 Any other key is a ConfigError - a machine overlay must never rewrite
 identity, contract, or protection semantics on one machine.
 """
@@ -39,7 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from wiki_legacy import LEGACY_WIKI_ENV  # noqa: E402
+from wiki_legacy import LEGACY_ORIENTATION_NAME, LEGACY_WIKI_ENV  # noqa: E402
 
 KIT_ROOT = SCRIPT_DIR.parent
 
@@ -114,6 +115,29 @@ def _require(condition: bool, message: str) -> None:
 def _reject_unknown(keys: set[str], allowed: set[str], label: str) -> None:
     unknown = keys - allowed
     _require(not unknown, f"{label} has unknown keys: {sorted(unknown)}")
+
+
+def _expand(raw: str, label: str) -> Path:
+    """expanduser that fails loud as a ConfigError: an unresolvable
+    ~user raises RuntimeError, which is a config problem, not a crash."""
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError as exc:
+        raise ConfigError(f"{label}: {exc}") from exc
+
+
+def _require_absolute_overlay_path(raw: object, label: str) -> None:
+    """Overlay machine paths must be absolute after ~ expansion: a
+    relative path would resolve against whatever directory the CLI
+    runs from."""
+    _require(
+        isinstance(raw, str) and raw != "",
+        f"{label} must be a non-empty string path",
+    )
+    _require(
+        _expand(raw, label).is_absolute(),
+        f"{label} must be absolute after ~ expansion (got {raw!r})",
+    )
 
 
 @dataclass(frozen=True)
@@ -270,14 +294,46 @@ def _git_toplevel(start: Path) -> Path | None:
         text=True,
     )
     if result.returncode != 0:
-        return None
+        if "not a git repository" in result.stderr:
+            return None
+        raise ConfigError(
+            f"git rev-parse --show-toplevel failed in {start}: "
+            f"{result.stderr.strip()}"
+        )
     return Path(result.stdout.strip())
 
 
 def _git_common_root(start: Path) -> Path | None:
-    """The main checkout's root (parent of the common .git dir), or None
-    outside a git repository."""
-    result = subprocess.run(
+    """The main checkout's root - the first entry of git worktree list,
+    which git always orders first - or None outside a git repository.
+
+    The common .git dir's parent is NOT the checkout (a repo may keep
+    its git dir elsewhere, and submodule git dirs nest under the
+    superproject's). But git itself does not record the main checkout
+    in those layouts: worktree list reports the GIT DIR as the first
+    worktree. That is detectable (first entry == common dir) and means
+    the main checkout is unfindable - None, so resolution fails loud
+    later instead of docking to an unrelated directory."""
+    worktrees = subprocess.run(
+        ["git", "-C", str(start), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if worktrees.returncode != 0:
+        if "not a git repository" in worktrees.stderr:
+            return None
+        raise ConfigError(
+            f"git worktree list failed in {start}: "
+            f"{worktrees.stderr.strip()}"
+        )
+    first: Path | None = None
+    for line in worktrees.stdout.splitlines():
+        if line.startswith("worktree "):
+            first = Path(line.removeprefix("worktree "))
+            break
+    if first is None:
+        return None
+    common = subprocess.run(
         [
             "git",
             "-C",
@@ -289,9 +345,11 @@ def _git_common_root(start: Path) -> Path | None:
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
+    if common.returncode == 0 and _same_path(
+        first, Path(common.stdout.strip())
+    ):
         return None
-    return Path(result.stdout.strip()).parent
+    return first
 
 
 def _same_path(a: Path, b: Path) -> bool:
@@ -332,6 +390,11 @@ def load_dock(dock_dir: Path) -> Dock:
     """Parse one dock directory fail-loud: manifest identity keys are
     mandatory and exact; the overlay allows exactly [dock].path."""
     manifest_path = dock_dir / DOCK_MANIFEST_NAME
+    _require(
+        manifest_path.is_file(),
+        f"{manifest_path} not found; a {DOCK_DIR_NAME}/ directory "
+        "without its manifest is a malformed dock",
+    )
     manifest = _load_toml(manifest_path)
     _reject_unknown(set(manifest), {"dock"}, f"{manifest_path}")
     table = manifest.get("dock")
@@ -366,7 +429,13 @@ def load_dock(dock_dir: Path) -> Dock:
             isinstance(raw_path, str) and raw_path != "",
             f"{overlay_path} [dock].path must be a non-empty string",
         )
-        wiki_path = Path(raw_path).expanduser()
+        wiki_path = _expand(raw_path, f"{overlay_path} [dock].path")
+        _require(
+            wiki_path.is_absolute(),
+            f"{overlay_path} [dock].path must be absolute (got "
+            f"{raw_path!r}); a relative path would resolve against "
+            "whatever directory the CLI runs from",
+        )
     return Dock(
         dock_dir=dock_dir,
         wiki_name=wiki_name,
@@ -376,8 +445,12 @@ def load_dock(dock_dir: Path) -> Dock:
 
 
 def _dock_at(directory: Path) -> Dock | None:
-    if (directory / DOCK_DIR_NAME / DOCK_MANIFEST_NAME).is_file():
-        return load_dock(directory / DOCK_DIR_NAME)
+    """The spec's walk-up stops at the first directory CONTAINING a
+    .wiki/ - a dock dir without its manifest is a malformed dock, and
+    load_dock fails loud on it rather than the walk silently passing."""
+    dock_dir = directory / DOCK_DIR_NAME
+    if dock_dir.is_dir():
+        return load_dock(dock_dir)
     return None
 
 
@@ -386,13 +459,27 @@ def verify_dock_identity(dock: Dock, root: Path) -> None:
     name the manifest claims, and must define the companion table the
     manifest names. Either mismatch fails loud naming both values."""
     raw = _load_toml(root / CONFIG_FILE_NAME)
-    name = raw.get("wiki", {}).get("name", root.name)
+    wiki_table = raw.get("wiki", {})
+    _require(
+        isinstance(wiki_table, dict),
+        f"{root / CONFIG_FILE_NAME} [wiki] must be a table",
+    )
+    name = wiki_table.get("name")
+    _require(
+        isinstance(name, str) and name != "",
+        f"{root / CONFIG_FILE_NAME} carries no [wiki].name; the dock "
+        "identity chain needs the wiki's name stated explicitly",
+    )
     _require(
         name == dock.wiki_name,
         f"dock {dock.dock_dir} names wiki {dock.wiki_name!r} but "
         f"{root / CONFIG_FILE_NAME} carries [wiki].name {name!r}",
     )
     companions = raw.get("companions", {})
+    _require(
+        isinstance(companions, dict),
+        f"{root / CONFIG_FILE_NAME} [companions] must be a table",
+    )
     _require(
         dock.companion in companions,
         f"dock {dock.dock_dir} names companion {dock.companion!r} but "
@@ -419,7 +506,7 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
     silently passed.
     """
     if explicit is not None:
-        root = Path(explicit).expanduser().resolve()
+        root = _expand(str(explicit), "--wiki").resolve()
         _require(
             (root / CONFIG_FILE_NAME).is_file(),
             f"--wiki {root} does not contain {CONFIG_FILE_NAME}; pass the "
@@ -454,7 +541,7 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
     # Step 2: the dock env variable names a specific dock directory.
     env_value = os.environ.get(DOCK_ENV)
     if env_value:
-        candidate = Path(env_value).expanduser().resolve()
+        candidate = _expand(env_value, DOCK_ENV).resolve()
         if (candidate / DOCK_MANIFEST_NAME).is_file():
             dock_dir = candidate
         else:
@@ -501,17 +588,32 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
                 binds.append(dock)
 
     # Step 5: the legacy channel, honored read-only until adoption.
+    legacy_note = ""
     legacy_value = os.environ.get(LEGACY_WIKI_ENV)
     if legacy_value:
-        root = Path(legacy_value).expanduser().resolve()
+        root = _expand(legacy_value, LEGACY_WIKI_ENV).resolve()
         if (root / CONFIG_FILE_NAME).is_file():
             return finish(root)
+        legacy_note = (
+            f"; the legacy {LEGACY_WIKI_ENV} channel is set to "
+            f"{legacy_value} but that path contains no {CONFIG_FILE_NAME}"
+        )
     if toplevel is not None:
-        orientation = toplevel / "CLAUDE.local.md"
+        orientation = toplevel / LEGACY_ORIENTATION_NAME
         if orientation.is_symlink():
-            root = orientation.resolve().parent
-            if (root / CONFIG_FILE_NAME).is_file():
+            target = orientation.resolve()
+            root = target.parent
+            if target.exists() and (root / CONFIG_FILE_NAME).is_file():
                 return finish(root)
+            reason = (
+                "is dangling"
+                if not target.exists()
+                else f"has no {CONFIG_FILE_NAME} beside it"
+            )
+            legacy_note += (
+                f"; the legacy orientation symlink {orientation} "
+                f"resolves to {target}, which {reason}"
+            )
 
     incomplete = binds[0] if binds else None
     if incomplete is not None:
@@ -520,7 +622,7 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
             f"{incomplete.wiki_name!r} but carries no {DOCK_OVERLAY_NAME} "
             "overlay on this machine, and no other channel resolved a "
             "wiki; create the overlay: "
-            f"{dock_complete_command(incomplete)}"
+            f"{dock_complete_command(incomplete)}{legacy_note}"
         )
     if toplevel is None:
         raise ConfigError(
@@ -528,11 +630,12 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
             f"never leaves a repository, so pass --wiki /path/to/wiki "
             f"(the directory containing {CONFIG_FILE_NAME}), set "
             f"{DOCK_ENV} to a dock directory, or run from a docked repo"
+            f"{legacy_note}"
         )
     raise ConfigError(
         f"no {CONFIG_FILE_NAME} and no {DOCK_DIR_NAME}/ dock between {cwd} "
         f"and the repository toplevel {toplevel}; pass --wiki "
-        f"/path/to/wiki or dock this repo first"
+        f"/path/to/wiki or dock this repo first{legacy_note}"
     )
 
 
@@ -547,23 +650,35 @@ def _load_toml(path: Path) -> dict:
 def _check_overlay_allowlist(overlay: dict, path: Path) -> None:
     allowed_tables = {"companions", "memory", "tools"}
     _reject_unknown(set(overlay), allowed_tables, f"{path}")
-    for name, table in overlay.get("companions", {}).items():
+    companions = overlay.get("companions", {})
+    _require(
+        isinstance(companions, dict), f"{path} [companions] must be a table"
+    )
+    for name, table in companions.items():
         _require(
             isinstance(table, dict),
             f"{path}: [companions.{name}] must be a table",
         )
         _reject_unknown(set(table), {"path"}, f"{path} [companions.{name}]")
+        if "path" in table:
+            _require_absolute_overlay_path(
+                table["path"], f"{path} [companions.{name}].path"
+            )
     memory = overlay.get("memory", {})
+    _require(isinstance(memory, dict), f"{path} [memory] must be a table")
     _reject_unknown(set(memory), {"triage", "projects_root"}, f"{path} [memory]")
     projects_root = memory.get("projects_root")
-    _require(
-        projects_root is None
-        or (isinstance(projects_root, str) and projects_root != ""),
-        f"{path} [memory].projects_root must be a non-empty string path",
-    )
+    if projects_root is not None:
+        _require_absolute_overlay_path(
+            projects_root, f"{path} [memory].projects_root"
+        )
     triage = memory.get("triage", {})
+    _require(
+        isinstance(triage, dict), f"{path} [memory.triage] must be a table"
+    )
     _reject_unknown(set(triage), {"extra_dirs"}, f"{path} [memory.triage]")
     tools = overlay.get("tools", {})
+    _require(isinstance(tools, dict), f"{path} [tools] must be a table")
     for key, value in tools.items():
         _require(
             isinstance(value, str),
@@ -605,7 +720,7 @@ def _build_companion(name: str, table: dict, overlay_path: str | None) -> Compan
         display_label=_string_or_none(table, "display_label", label) or name,
         posture=posture,
         memory_triage=memory_triage,
-        path=Path(overlay_path).expanduser() if overlay_path else None,
+        path=_expand(overlay_path, f"{label}.path") if overlay_path else None,
     )
 
 
@@ -758,7 +873,7 @@ def load_config(root: Path) -> WikiConfig:
         tools=tools,
         extra_triage_dirs=tuple(extra_dirs),
         projects_root=(
-            Path(overlay_projects_root).expanduser()
+            _expand(overlay_projects_root, "[memory].projects_root")
             if overlay_projects_root
             else None
         ),

@@ -11,3 +11,8 @@ never config, never derived, never widened.
 
 # The v1 deployment's env channel name (read-only; retired at adoption).
 LEGACY_WIKI_ENV = "AURA_WIKI"  # v1 legacy shim constant, see module docstring
+
+# The v1 orientation-file symlink convention at a repo toplevel: the
+# stored link that the dock's computed resolution retires (docking
+# spec, step 5; honored read-only like the env channel).
+LEGACY_ORIENTATION_NAME = "CLAUDE.local.md"
