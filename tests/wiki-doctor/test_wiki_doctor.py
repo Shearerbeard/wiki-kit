@@ -348,6 +348,92 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertIn("no owner", result.findings[0].message)
 
+    def test_board_check_honors_boardkit_cards_dir(self) -> None:
+        self.write("boardkit.toml", '[board]\ncards_dir = "docs/board/cards"\n')
+        self.write(
+            "docs/board/board.md",
+            "## In progress\n\n"
+            "- [K9-missing](cards/K9-missing.md) - gates: S\n\n"
+            "## Ready\n\n(empty)\n\n"
+            "## Done\n\n(empty)\n",
+        )
+
+        result = wiki_doctor.check_board(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("broken", result.findings[0].message)
+        self.assertIn("docs/board/cards", str(result.findings[0].path))
+
+    def test_board_check_boardkit_layout_passes_when_healthy(self) -> None:
+        self.write("boardkit.toml", '[board]\ncards_dir = "docs/board/cards"\n')
+        self.write(
+            "docs/board/board.md",
+            "## In progress\n\n"
+            "- [K1-ok](cards/K1-ok.md) - gates: S\n\n"
+            "## Ready\n\n(empty)\n\n"
+            "## Done\n\n(empty)\n",
+        )
+        self.write(
+            "docs/board/cards/K1-ok.md",
+            "---\n"
+            "id: K1-ok\n"
+            "status: in-progress\n"
+            "owner: kimi\n"
+            "---\n\n"
+            "## Log\n\n"
+            "- 2026-08-24: claimed.\n",
+        )
+
+        result = wiki_doctor.check_board(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertIn("1 in-progress", result.summary)
+
+    def test_board_check_reports_unreadable_boardkit_toml(self) -> None:
+        self.write("boardkit.toml", "[board\n")
+
+        result = wiki_doctor.check_board(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("boardkit.toml", str(result.findings[0].path))
+
+    def test_board_check_rejects_invalid_cards_dir(self) -> None:
+        self.write("boardkit.toml", '[board]\ncards_dir = 3\n')
+        result = wiki_doctor.check_board(self.ctx)
+        self.assertTrue(result.failed)
+        self.assertIn("cards_dir", result.findings[0].message)
+
+        self.write("boardkit.toml", '[board]\ncards_dir = ""\n')
+        result = wiki_doctor.check_board(self.ctx)
+        self.assertTrue(result.failed)
+        self.assertIn("cards_dir", result.findings[0].message)
+
+    def test_board_check_rejects_non_table_board(self) -> None:
+        self.write("boardkit.toml", 'board = "docs/board"\n')
+
+        result = wiki_doctor.check_board(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("[board]", result.findings[0].message)
+
+    def test_board_check_falls_back_when_boardkit_has_no_cards_dir(
+        self,
+    ) -> None:
+        self.write("boardkit.toml", "[board]\n")
+        self.write(
+            "planning/board.md",
+            "## In progress\n\n"
+            "- [S1-gone](cards/S1-gone.md) - gates: S\n\n"
+            "## Ready\n\n(empty)\n\n"
+            "## Done\n\n(empty)\n",
+        )
+
+        result = wiki_doctor.check_board(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("broken", result.findings[0].message)
+        self.assertIn("planning/cards", str(result.findings[0].path))
+
     # -- repo names --------------------------------------------------------
 
     def test_repo_names_404_fails_and_names_configured_companions(self) -> None:

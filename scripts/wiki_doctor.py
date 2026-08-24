@@ -14,6 +14,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -567,11 +568,49 @@ def log_lines(text: str) -> list[str]:
     ]
 
 
+def _board_paths(repo_root: Path) -> tuple[Path, Path]:
+    """The (board view, cards dir) pair for the repo's planning board.
+
+    Default layout: planning/board.md + planning/cards/. A
+    boardkit.toml [board].cards_dir re-roots both - the generated board
+    view sits beside the cards dir (boardkit's own layout:
+    docs/board/board.md next to docs/board/cards/)."""
+    boardkit_toml = repo_root / "boardkit.toml"
+    if boardkit_toml.is_file():
+        try:
+            with boardkit_toml.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigError(f"{boardkit_toml}: {exc}") from exc
+        board_table = data.get("board")
+        if board_table is not None and not isinstance(board_table, dict):
+            raise ConfigError(f"{boardkit_toml} [board] must be a table")
+        if isinstance(board_table, dict):
+            cards_dir = board_table.get("cards_dir")
+            if cards_dir is not None:
+                if not (isinstance(cards_dir, str) and cards_dir):
+                    raise ConfigError(
+                        f"{boardkit_toml} [board].cards_dir must be a "
+                        "non-empty string"
+                    )
+                cards = repo_root / cards_dir
+                return cards.parent / "board.md", cards
+    return repo_root / "planning" / "board.md", repo_root / "planning" / "cards"
+
+
 def check_board(ctx: DoctorContext) -> CheckOutcome:
-    """A deployment MAY run a planning board at planning/board.md; the
-    check is structural and skips cleanly when none exists."""
+    """A deployment MAY run a planning board; the check is structural
+    and skips cleanly when none exists. The board location comes from
+    boardkit.toml when present, else the planning/ default."""
     name = "board"
-    board = ctx.repo_root / "planning" / "board.md"
+    try:
+        board, cards = _board_paths(ctx.repo_root)
+    except ConfigError as exc:
+        return outcome(
+            name,
+            (fail(name, str(exc), ctx.repo_root / "boardkit.toml"),),
+            "board config unreadable",
+        )
     if not board.exists():
         return outcome(name, (), "no planning board (optional)")
     text = board.read_text(encoding="utf-8")
@@ -583,7 +622,7 @@ def check_board(ctx: DoctorContext) -> CheckOutcome:
     in_progress_cards = card_links(sections.get("In progress", []))
     done_cards = card_links(sections.get("Done", []))
     for card in in_progress_cards:
-        path = ctx.repo_root / "planning" / "cards" / card
+        path = cards / card
         if not path.exists():
             findings.append(fail(name, "In-progress card link is broken", path))
             continue
@@ -594,7 +633,7 @@ def check_board(ctx: DoctorContext) -> CheckOutcome:
         if not log_lines(card_text):
             findings.append(fail(name, "In-progress card has no Log lines", path))
     for card in done_cards:
-        path = ctx.repo_root / "planning" / "cards" / card
+        path = cards / card
         if not path.exists():
             findings.append(fail(name, "Done card link is broken", path))
             continue
