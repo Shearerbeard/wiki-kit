@@ -33,3 +33,7 @@ None
 
 ### Continuation Context
 New workstream. Design at GH #270. Insertion point identified. TASK: implement the event emission in the worker hook. HAZARDS: must not double-count with existing scratchpad_usage event.
+
+## Session updates (uncurated)
+
+_Appended mechanically by garden apply (one block per handoff event). Interactive /garden absorbs blocks into the curated sections above with user approval, then prunes them._

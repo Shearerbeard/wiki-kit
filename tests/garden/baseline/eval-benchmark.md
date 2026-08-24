@@ -2,7 +2,7 @@
 status: active
 branch: main
 sha: abc1234
-last_updated: 2026-05-24
+last_updated: 2026-05-17
 session_id: pending
 blocker: ""
 ---
@@ -12,19 +12,9 @@ blocker: ""
 ### Current State
 - 7 models x 3 checkpoints complete
 - Tool call audit done: 68-call structural floor
-- Scope leakage fix tested: Qwen dropped 141 to 89 tools
-- /benchmark-viz skill prototype working
+- Scope leakage root cause found (TASK_GOAL_DIRECTIVE)
 
 ### What Was Done
-#### 2026-05-24 (session 2 — viz skill)
-1. Build `/benchmark-viz` skill
-2. Tested on 3 model runs, output matches hand-drawn diagrams
-
-#### 2026-05-24 (session 1 — scope leakage fix)
-1. Removed TASK_GOAL_DIRECTIVE from worker_task_prompt.md
-2. Re-ran Qwen td24 on E: tool count 141 to 89 (37% reduction)
-3. All 5 prompts still pass — no quality regression
-
 #### 2026-05-17 (previous session)
 1. Gemini E off-peak: 100% quality, 74 tools, 377k tokens
 2. Tool call audit: all 7 models x 5 prompts parsed
@@ -33,12 +23,11 @@ blocker: ""
 
 ### Next
 1. Build `/benchmark-viz` skill
-2. Verify all 7 models pass without TASK_GOAL_DIRECTIVE
+2. Test TASK_GOAL_DIRECTIVE removal on Qwen
 3. Token accuracy investigation (Sonnet 1.8M, Opus 1.6M seem inflated)
-4. E + scratchpad run (GPT-5.5)
 
 ### Continuation Context
-Scope leakage fix validated on Qwen. Viz skill working. Need to verify remaining 6 models without TASK_GOAL_DIRECTIVE before merging the prompt change. Token accuracy still uninvestigated.
+Root cause identified. Next session: prototype the viz skill and test the prompt change on Qwen before rolling it out to all models.
 
 ## Session updates (uncurated)
 

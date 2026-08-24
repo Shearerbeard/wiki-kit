@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """Validate build-index.py output after test scenarios are applied.
 
-Run AFTER applying test fixtures to workstreams/ and wiki/log.md.
-Exit 0 = all checks pass, exit 1 = failures found.
+Run AFTER applying test fixtures to the fixture wiki's workstreams/ and
+wiki/log.md (run-tests.sh owns that sequencing). Exit 0 = all checks
+pass, exit 1 = failures found.
 """
 
+import argparse
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-# This fixture travels with the wiki deployment it exercises (unlike
-# scripts/, which is shared kit machinery): tests/garden/ sits at
-# <wiki-root>/tests/garden/, so self-locating three parents up is the
-# wiki root, not a guess. Passed explicitly to build-index.py rather
-# than relying on its own cwd-walk-up fallback, which would resolve
-# against whatever directory the caller invoked from.
-WIKI_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS_DIR = WIKI_ROOT / "scripts"
-BUILD_SCRIPT = SCRIPTS_DIR / "build-index.py"
+# The machinery under test is the kit's, located from this file's place
+# in the kit checkout. The CONTENT it runs over is the throwaway fixture
+# wiki run-tests.sh builds, passed in as --wiki: this file lives in the
+# kit repo, which is not a wiki, so there is no root to self-locate.
+KIT_ROOT = Path(__file__).resolve().parents[2]
+BUILD_SCRIPT = KIT_ROOT / "scripts" / "build-index.py"
 
 
-def run_json() -> dict:
+def run_json(wiki_root: Path) -> dict:
     result = subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT), "--wiki", str(WIKI_ROOT), "--json"],
+        [sys.executable, str(BUILD_SCRIPT), "--wiki", str(wiki_root), "--json"],
         capture_output=True,
         text=True,
     )
@@ -36,12 +35,19 @@ def run_json() -> dict:
     return json.loads(result.stdout)
 
 
-def run_tree() -> str:
+def run_tree(wiki_root: Path) -> str:
     result = subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT), "--wiki", str(WIKI_ROOT)],
+        [sys.executable, str(BUILD_SCRIPT), "--wiki", str(wiki_root)],
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        print(
+            f"FAIL: build-index.py (tree) exited {result.returncode}",
+            file=sys.stderr,
+        )
+        print(result.stderr, file=sys.stderr)
+        sys.exit(1)
     return result.stdout
 
 
@@ -58,8 +64,17 @@ def count_check(total: int, passed: int, name: str, condition: bool) -> tuple[in
 
 
 def main():
-    d = run_json()
-    tree = run_tree()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--wiki",
+        type=Path,
+        required=True,
+        help="fixture wiki root the scenario fixtures were applied to",
+    )
+    args = parser.parse_args()
+
+    d = run_json(args.wiki)
+    tree = run_tree(args.wiki)
     active_names = {s["name"] for s in d["active"]}
     parked_names = {s["name"] for s in d["parked"]}
     archival_names = {c["name"] for c in d["archival_candidates"]}

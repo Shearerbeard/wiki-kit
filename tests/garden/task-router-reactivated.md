@@ -35,3 +35,7 @@ None
 
 ### Continuation Context
 Reactivated from parked. Coordinator path working with 3 tests. TASK: wire up worker dispatch. Read `task-router-roadmap.md` for full plan. HAZARDS: task-router-rs uses different Tool trait — need adapter layer for MCP tools.
+
+## Session updates (uncurated)
+
+_Appended mechanically by garden apply (one block per handoff event). Interactive /garden absorbs blocks into the curated sections above with user approval, then prunes them._
