@@ -10,11 +10,13 @@ is the right base for the kit's own `schemas/` and `templates/` and the
 wrong base for everything the wiki owns.
 
 Resolution order (docking spec): flag, dock env, walk-up, common-dir,
-legacy. K2 ships the subset a wiki repo needs of itself: the explicit
-flag and the walk-up to `wiki.toml` bounded at the git toplevel. The
-dock steps (`WIKI_DOCK`, `.wiki/` manifests, the common-dir worktree
-fallback, the legacy channel) are K3's resolver card and slot in where
-the comment below marks.
+legacy. First hit wins; an incomplete dock (manifest present, overlay
+missing - the normal state of a committed-posture linked worktree)
+falls through, but the nearest manifest's identity still binds
+whichever later step completes, and resolution never silently passes a
+COMPLETE dock. The legacy channel (env variable named in
+`wiki_legacy.py`, and the orientation-symlink convention) is honored
+read-only until an adoption ruling retires it.
 
 The overlay is allowlisted, not open: it may set exactly
 `companions.<name>.path`, `[memory.triage].extra_dirs`, and `[tools].*`.
@@ -26,16 +28,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-KIT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from wiki_legacy import LEGACY_WIKI_ENV  # noqa: E402
+
+KIT_ROOT = SCRIPT_DIR.parent
 
 CONFIG_FILE_NAME = "wiki.toml"
 OVERLAY_FILE_NAME = "wiki.local.toml"
+
+DOCK_DIR_NAME = ".wiki"
+DOCK_MANIFEST_NAME = "manifest.toml"
+DOCK_OVERLAY_NAME = "local.toml"
+DOCK_ENV = "WIKI_DOCK"
 
 # The only slug rule v1 ships: an absolute path dash-encodes to the
 # per-project memory directory name (`/home/alex/src/widget` ->
@@ -166,6 +180,9 @@ class WikiConfig:
     companions: dict[str, Companion] = field(default_factory=dict)
     tools: dict[str, str] = field(default_factory=dict)
     extra_triage_dirs: tuple[str, ...] = ()
+    # Overlay-only machine path: where per-project agent memory lives on
+    # this machine. None means the consumer's platform default applies.
+    projects_root: Path | None = None
 
     def companion(self, name: str | None = None) -> Companion:
         if name is None:
@@ -257,14 +274,149 @@ def _git_toplevel(start: Path) -> Path | None:
     return Path(result.stdout.strip())
 
 
-def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
-    """First hit wins, per the docking spec's resolution order.
+def _git_common_root(start: Path) -> Path | None:
+    """The main checkout's root (parent of the common .git dir), or None
+    outside a git repository."""
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(start),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return Path(result.stdout.strip()).parent
 
-    K2 subset: step 1 (the --wiki flag) and the wiki-repo case of step 3
-    (walk-up to wiki.toml, bounded at the git toplevel; no walk-up
-    outside a git repo). Steps 2, 4, and 5 (WIKI_DOCK, dock manifests,
-    the common-dir worktree fallback, the legacy channel) are the K3
-    resolver card and slot in here.
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Path identity that survives case-insensitive filesystems and
+    symlink aliases: string equality first, inode identity second."""
+    if a == b:
+        return True
+    try:
+        return a.samefile(b)
+    except OSError:
+        return False
+
+
+@dataclass(frozen=True)
+class Dock:
+    """One consumer repo's `.wiki/` dock: tracked identity manifest plus
+    the machine-local overlay. `wiki_path` is None while the overlay is
+    missing - the normal state of a freshly checked-out committed-posture
+    clone or linked worktree."""
+
+    dock_dir: Path
+    wiki_name: str
+    companion: str
+    wiki_path: Path | None
+
+
+def dock_complete_command(dock: Dock) -> str:
+    """The command the resolver's fail-loud message names when no step
+    yields a complete dock (spec: the error names the incomplete dock
+    and the command that creates its overlay)."""
+    return (
+        f"python3 {KIT_ROOT / 'scripts' / 'wiki-dock.py'} complete "
+        f"--wiki /path/to/{dock.wiki_name} --repo {dock.dock_dir.parent}"
+    )
+
+
+def load_dock(dock_dir: Path) -> Dock:
+    """Parse one dock directory fail-loud: manifest identity keys are
+    mandatory and exact; the overlay allows exactly [dock].path."""
+    manifest_path = dock_dir / DOCK_MANIFEST_NAME
+    manifest = _load_toml(manifest_path)
+    _reject_unknown(set(manifest), {"dock"}, f"{manifest_path}")
+    table = manifest.get("dock")
+    _require(
+        isinstance(table, dict), f"{manifest_path} is missing its [dock] table"
+    )
+    _reject_unknown(set(table), {"wiki", "companion"}, f"{manifest_path} [dock]")
+    wiki_name = table.get("wiki")
+    companion = table.get("companion")
+    _require(
+        isinstance(wiki_name, str) and wiki_name != "",
+        f"{manifest_path} [dock].wiki must be a non-empty string",
+    )
+    _require(
+        isinstance(companion, str) and companion != "",
+        f"{manifest_path} [dock].companion must be a non-empty string",
+    )
+
+    overlay_path = dock_dir / DOCK_OVERLAY_NAME
+    wiki_path: Path | None = None
+    if overlay_path.is_file():
+        overlay = _load_toml(overlay_path)
+        _reject_unknown(set(overlay), {"dock"}, f"{overlay_path}")
+        overlay_table = overlay.get("dock", {})
+        _require(
+            isinstance(overlay_table, dict),
+            f"{overlay_path} [dock] must be a table",
+        )
+        _reject_unknown(set(overlay_table), {"path"}, f"{overlay_path} [dock]")
+        raw_path = overlay_table.get("path")
+        _require(
+            isinstance(raw_path, str) and raw_path != "",
+            f"{overlay_path} [dock].path must be a non-empty string",
+        )
+        wiki_path = Path(raw_path).expanduser()
+    return Dock(
+        dock_dir=dock_dir,
+        wiki_name=wiki_name,
+        companion=companion,
+        wiki_path=wiki_path,
+    )
+
+
+def _dock_at(directory: Path) -> Dock | None:
+    if (directory / DOCK_DIR_NAME / DOCK_MANIFEST_NAME).is_file():
+        return load_dock(directory / DOCK_DIR_NAME)
+    return None
+
+
+def verify_dock_identity(dock: Dock, root: Path) -> None:
+    """The identity chain, both ways: the wiki at `root` must carry the
+    name the manifest claims, and must define the companion table the
+    manifest names. Either mismatch fails loud naming both values."""
+    raw = _load_toml(root / CONFIG_FILE_NAME)
+    name = raw.get("wiki", {}).get("name", root.name)
+    _require(
+        name == dock.wiki_name,
+        f"dock {dock.dock_dir} names wiki {dock.wiki_name!r} but "
+        f"{root / CONFIG_FILE_NAME} carries [wiki].name {name!r}",
+    )
+    companions = raw.get("companions", {})
+    _require(
+        dock.companion in companions,
+        f"dock {dock.dock_dir} names companion {dock.companion!r} but "
+        f"{root / CONFIG_FILE_NAME} defines no "
+        f"[companions.{dock.companion}] table (configured: "
+        f"{sorted(companions) or 'none'})",
+    )
+
+
+def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
+    """First hit wins, per the docking spec's resolution order:
+
+    1. the explicit --wiki flag (the wiki repo root itself);
+    2. the dock env variable (a dock dir, or a dir directly holding one);
+    3. walk-up from cwd bounded at the git toplevel - wiki.toml means we
+       are inside the wiki repo itself, a `.wiki/` dock means a consumer;
+    4. the git common-dir fallback (a linked worktree reaches the main
+       checkout's dock with zero per-worktree setup);
+    5. the legacy channel, read-only (env name in wiki_legacy.py, and a
+       toplevel orientation-file symlink into a wiki root).
+
+    An incomplete dock falls through, but the NEAREST manifest's identity
+    binds whichever dock or root completes; a complete dock is never
+    silently passed.
     """
     if explicit is not None:
         root = Path(explicit).expanduser().resolve()
@@ -274,24 +426,113 @@ def resolve_wiki_root(explicit: Path | str | None = None) -> Path:
             "wiki repo root itself",
         )
         return root
+
+    binds: list[Dock] = []
+
+    def finish(root: Path) -> Path:
+        root = root.resolve()
+        _require(
+            (root / CONFIG_FILE_NAME).is_file(),
+            f"resolved wiki root {root} does not contain {CONFIG_FILE_NAME}",
+        )
+        for dock in binds:
+            verify_dock_identity(dock, root)
+        return root
+
+    def from_dock(dock: Dock) -> Path:
+        assert dock.wiki_path is not None
+        binds.append(dock)
+        root = dock.wiki_path.resolve()
+        _require(
+            (root / CONFIG_FILE_NAME).is_file(),
+            f"{dock.dock_dir / DOCK_OVERLAY_NAME} points at {root} which "
+            f"does not contain {CONFIG_FILE_NAME}; re-run "
+            f"{dock_complete_command(dock)}",
+        )
+        return finish(root)
+
+    # Step 2: the dock env variable names a specific dock directory.
+    env_value = os.environ.get(DOCK_ENV)
+    if env_value:
+        candidate = Path(env_value).expanduser().resolve()
+        if (candidate / DOCK_MANIFEST_NAME).is_file():
+            dock_dir = candidate
+        else:
+            dock_dir = candidate / DOCK_DIR_NAME
+        _require(
+            (dock_dir / DOCK_MANIFEST_NAME).is_file(),
+            f"{DOCK_ENV}={env_value} is neither a dock directory nor a "
+            f"directory containing {DOCK_DIR_NAME}/{DOCK_MANIFEST_NAME}",
+        )
+        dock = load_dock(dock_dir)
+        if dock.wiki_path is not None:
+            return from_dock(dock)
+        binds.append(dock)  # incomplete: fall through, identity binds
+
     cwd = Path.cwd().resolve()
     toplevel = _git_toplevel(cwd)
+
+    # Step 3: bounded walk-up. The first directory carrying wiki.toml is
+    # the wiki root itself (a wiki does not dock to itself); the first
+    # carrying a dock is the nearest dock, and the walk stops there.
+    if toplevel is not None:
+        current = cwd
+        while True:
+            if (current / CONFIG_FILE_NAME).is_file():
+                return finish(current)
+            dock = _dock_at(current)
+            if dock is not None:
+                if dock.wiki_path is not None:
+                    return from_dock(dock)
+                binds.append(dock)
+                break  # nearest dock found; incomplete falls to step 4
+            if _same_path(current, toplevel) or current == current.parent:
+                break
+            current = current.parent
+
+    # Step 4: a linked worktree reaches the main checkout's dock.
+    if toplevel is not None:
+        common_root = _git_common_root(cwd)
+        if common_root is not None and not _same_path(common_root, toplevel):
+            dock = _dock_at(common_root)
+            if dock is not None:
+                if dock.wiki_path is not None:
+                    return from_dock(dock)
+                binds.append(dock)
+
+    # Step 5: the legacy channel, honored read-only until adoption.
+    legacy_value = os.environ.get(LEGACY_WIKI_ENV)
+    if legacy_value:
+        root = Path(legacy_value).expanduser().resolve()
+        if (root / CONFIG_FILE_NAME).is_file():
+            return finish(root)
+    if toplevel is not None:
+        orientation = toplevel / "CLAUDE.local.md"
+        if orientation.is_symlink():
+            root = orientation.resolve().parent
+            if (root / CONFIG_FILE_NAME).is_file():
+                return finish(root)
+
+    incomplete = binds[0] if binds else None
+    if incomplete is not None:
+        raise ConfigError(
+            f"dock {incomplete.dock_dir} names wiki "
+            f"{incomplete.wiki_name!r} but carries no {DOCK_OVERLAY_NAME} "
+            "overlay on this machine, and no other channel resolved a "
+            "wiki; create the overlay: "
+            f"{dock_complete_command(incomplete)}"
+        )
     if toplevel is None:
         raise ConfigError(
             f"not inside a git repository and no --wiki given; the walk-up "
             f"never leaves a repository, so pass --wiki /path/to/wiki "
-            f"(the directory containing {CONFIG_FILE_NAME})"
+            f"(the directory containing {CONFIG_FILE_NAME}), set "
+            f"{DOCK_ENV} to a dock directory, or run from a docked repo"
         )
-    current = cwd
-    while True:
-        if (current / CONFIG_FILE_NAME).is_file():
-            return current
-        if current == toplevel or current == current.parent:
-            break
-        current = current.parent
     raise ConfigError(
-        f"no {CONFIG_FILE_NAME} between {cwd} and the repository toplevel "
-        f"{toplevel}; pass --wiki /path/to/wiki"
+        f"no {CONFIG_FILE_NAME} and no {DOCK_DIR_NAME}/ dock between {cwd} "
+        f"and the repository toplevel {toplevel}; pass --wiki "
+        f"/path/to/wiki or dock this repo first"
     )
 
 
@@ -313,7 +554,13 @@ def _check_overlay_allowlist(overlay: dict, path: Path) -> None:
         )
         _reject_unknown(set(table), {"path"}, f"{path} [companions.{name}]")
     memory = overlay.get("memory", {})
-    _reject_unknown(set(memory), {"triage"}, f"{path} [memory]")
+    _reject_unknown(set(memory), {"triage", "projects_root"}, f"{path} [memory]")
+    projects_root = memory.get("projects_root")
+    _require(
+        projects_root is None
+        or (isinstance(projects_root, str) and projects_root != ""),
+        f"{path} [memory].projects_root must be a non-empty string path",
+    )
     triage = memory.get("triage", {})
     _reject_unknown(set(triage), {"extra_dirs"}, f"{path} [memory.triage]")
     tools = overlay.get("tools", {})
@@ -490,6 +737,7 @@ def load_config(root: Path) -> WikiConfig:
     )
 
     tools = dict(overlay.get("tools", {}))
+    overlay_projects_root = overlay.get("memory", {}).get("projects_root")
     extra_dirs = overlay.get("memory", {}).get("triage", {}).get("extra_dirs", [])
     _require(
         isinstance(extra_dirs, list)
@@ -509,6 +757,11 @@ def load_config(root: Path) -> WikiConfig:
         night=night,
         tools=tools,
         extra_triage_dirs=tuple(extra_dirs),
+        projects_root=(
+            Path(overlay_projects_root).expanduser()
+            if overlay_projects_root
+            else None
+        ),
     )
 
 
@@ -549,6 +802,9 @@ def _config_as_json(config: WikiConfig) -> dict:
             "commit_prefix": config.night.commit_prefix,
         },
         "tools": config.tools,
+        "projects_root": (
+            str(config.projects_root) if config.projects_root else None
+        ),
         "triage_project_dirs": _triage_dirs_or_none(config),
     }
 

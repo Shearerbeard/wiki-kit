@@ -40,6 +40,7 @@ FORBIDDEN = (
 # The v1 legacy shim and its tests: the one allowed machinery enclave.
 ENCLAVE = {
     "scripts/wiki_event.py",
+    "scripts/wiki_legacy.py",
     "schemas/events/handoff-v1.schema.json",
     "tests/wiki-event/test_wiki_event.py",
     "tests/sweep/test_zero_aura_strings.py",  # this file names the terms
