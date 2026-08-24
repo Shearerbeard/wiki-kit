@@ -17,7 +17,9 @@ fail() {
   exit 1
 }
 
-[ -d "$KIT_DIR/.git" ] || fail "kit repo not found at $KIT_DIR"
+# In a linked worktree .git is a file, not a directory; ask git instead.
+git -C "$KIT_DIR" rev-parse --git-dir >/dev/null 2>&1 \
+  || fail "kit repo not found at $KIT_DIR"
 mkdir -p "$REPORT_DIR"
 
 docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
