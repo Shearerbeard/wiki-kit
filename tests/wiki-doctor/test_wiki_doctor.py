@@ -397,6 +397,55 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertIn("boardkit.toml", str(result.findings[0].path))
 
+    # -- kit stamp -----------------------------------------------------------
+
+    def stamp(self, version: int = 1, commit: str = "abc123") -> None:
+        self.write(
+            "wiki.toml",
+            MINIMAL_CONFIG
+            + f'\n[kit]\ncontract_version = {version}\ncommit = "{commit}"\n',
+        )
+        self._rebuild_ctx()
+
+    def test_kit_stamp_absent_warns(self) -> None:
+        result = wiki_doctor.check_kit_stamp(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertTrue(result.warned)
+        self.assertIn("no [kit] stamp", result.findings[0].message)
+
+    def test_kit_stamp_unsupported_version_fails(self) -> None:
+        self.stamp(version=99)
+
+        result = wiki_doctor.check_kit_stamp(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("99", result.findings[0].message)
+
+    def test_kit_stamp_commit_drift_warns(self) -> None:
+        self.stamp(commit="0" * 40)
+
+        result = wiki_doctor.check_kit_stamp(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertTrue(result.warned)
+        self.assertIn("stamped at", result.findings[0].message)
+
+    def test_kit_stamp_clean_when_aligned(self) -> None:
+        head = subprocess.run(
+            ["git", "-C", str(KIT_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.stamp(commit=head)
+
+        result = wiki_doctor.check_kit_stamp(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertFalse(result.warned)
+        self.assertIn("contract v1", result.summary)
+
     def test_board_check_rejects_invalid_cards_dir(self) -> None:
         self.write("boardkit.toml", '[board]\ncards_dir = 3\n')
         result = wiki_doctor.check_board(self.ctx)
@@ -578,8 +627,34 @@ class DoctorTest(unittest.TestCase):
         hooks.mkdir(parents=True, exist_ok=True)
         hook = hooks / "pre-commit"
         hook.write_text(
-            "#!/bin/sh\n# wiki-kit pre-commit wrapper\n"
-            f'exec python3 "{KIT_ROOT / "scripts" / "pre-commit"}" "$@"\n'
+            "#!/bin/sh\n"
+            f"{wiki_doctor.HOOK_MARKER}\n"
+            'OVERLAY="$MAIN_ROOT/wiki.local.toml"\n'
+            'exec "$PYTHON" "$KIT_ROOT/scripts/pre-commit" "$@"\n'
+        )
+        hook.chmod(0o755)
+        self.write("wiki.local.toml", f'[tools]\nkit = "{KIT_ROOT}"\n')
+        rules = wiki_doctor.contract_deny_rules(self.ctx.config)
+        self.write(
+            ".claude/settings.json",
+            json.dumps({"permissions": {"deny": rules}}),
+        )
+        self._rebuild_ctx()
+
+        result = wiki_doctor.check_install(self.ctx)
+
+        self.assertFalse(result.failed, [f.message for f in result.findings])
+
+    def test_install_check_reports_missing_overlay_kit_path(self) -> None:
+        self._init_git()
+        hooks = self.root / ".git" / "hooks"
+        hooks.mkdir(parents=True, exist_ok=True)
+        hook = hooks / "pre-commit"
+        hook.write_text(
+            "#!/bin/sh\n"
+            f"{wiki_doctor.HOOK_MARKER}\n"
+            'OVERLAY="$MAIN_ROOT/wiki.local.toml"\n'
+            'exec "$PYTHON" "$KIT_ROOT/scripts/pre-commit" "$@"\n'
         )
         hook.chmod(0o755)
         rules = wiki_doctor.contract_deny_rules(self.ctx.config)
@@ -590,7 +665,66 @@ class DoctorTest(unittest.TestCase):
 
         result = wiki_doctor.check_install(self.ctx)
 
-        self.assertFalse(result.failed, [f.message for f in result.findings])
+        self.assertTrue(result.failed)
+        self.assertTrue(
+            any("[tools] kit" in f.message for f in result.findings)
+        )
+
+    def test_install_check_warns_when_main_checkout_unfindable(self) -> None:
+        """Exotic layout (separate git dir): tools read the root's own
+        overlay, but the wrapper can never resolve it - the doctor
+        warns rather than passing silently."""
+        meta = Path(self._tmp.name) / "meta"
+        meta.mkdir()
+        subprocess.run(
+            [
+                "git",
+                "init",
+                "--separate-git-dir",
+                str(meta / "wiki.git"),
+                str(self.root),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        hooks_dir = Path(
+            subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "--git-path", "hooks"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        if not hooks_dir.is_absolute():
+            hooks_dir = self.root / hooks_dir
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook = hooks_dir / "pre-commit"
+        hook.write_text(
+            "#!/bin/sh\n"
+            f"{wiki_doctor.HOOK_MARKER}\n"
+            'OVERLAY="$MAIN_ROOT/wiki.local.toml"\n'
+            'exec "$PYTHON" "$KIT_ROOT/scripts/pre-commit" "$@"\n'
+        )
+        hook.chmod(0o755)
+        self.write("wiki.local.toml", f'[tools]\nkit = "{KIT_ROOT}"\n')
+        rules = wiki_doctor.contract_deny_rules(self.ctx.config)
+        self.write(
+            ".claude/settings.json",
+            json.dumps({"permissions": {"deny": rules}}),
+        )
+        self._rebuild_ctx()
+
+        result = wiki_doctor.check_install(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertTrue(result.warned)
+        self.assertTrue(
+            any(
+                "cannot locate the main checkout" in f.message
+                for f in result.findings
+            )
+        )
 
 
 if __name__ == "__main__":

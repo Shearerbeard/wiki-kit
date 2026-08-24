@@ -3,13 +3,15 @@
 provenance rules over staged content.
 
 The kit installer wires this into the wiki repo's git hooks dir as a
-generated wrapper that pins the installing interpreter and exec's this
-file from the kit checkout (a plain symlink would run under whatever
-python3 PATH resolves, which may lack jsonschema). Machinery (renderer,
-validator, schemas) runs from the KIT checkout; content comes from the
-STAGED tree of the wiki repo the commit is happening in. The
-enforcement contract, including what this hook does and does not cover,
-is docs/enforcement-contract.md in the kit repo.
+generated wrapper that bakes no machine paths: at run time the wrapper
+reads the kit checkout path from the deployment's machine-local
+overlay ([tools] kit in wiki.local.toml, reached through the git
+common dir so linked worktrees resolve) and probes for a python that
+can import jsonschema. Machinery (renderer, validator, schemas) runs
+from the KIT checkout; content comes from the STAGED tree of the wiki
+repo the commit is happening in. The enforcement contract, including
+what this hook does and does not cover, is docs/enforcement-contract.md
+in the kit repo.
 
 Checks, on staged content only:
 1. wiki/log.md is a generated projection: whenever it or any renderer

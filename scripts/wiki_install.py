@@ -9,10 +9,14 @@ The kit repo holds machinery; this installer wires a TARGET wiki repo
   skeleton, an empty quarantine ledger, the pending and log projections,
   and - when the repo has no commits yet - an initial commit of exactly
   the files the installer wrote.
-- pre-commit hook: a generated wrapper pinning the installing
-  interpreter and exec-ing the kit's current `scripts/pre-commit` (the
-  mechanical provenance layer the pre-extraction installer never
-  installed).
+- pre-commit hook: a generated wrapper that bakes no machine paths -
+  it resolves the kit checkout from the deployment's machine-local
+  overlay at run time (the mechanical provenance layer the
+  pre-extraction installer never installed).
+- kit stamp: the deployment's wiki.toml records the contract version
+  and kit commit it was installed from ([kit], installer-owned); the
+  machine-local overlay records where the kit checkout lives
+  ([tools] kit).
 - deny rules: derived from the deployment's own `[contract]` in
   `wiki.toml` - the single contract source the doctor and install-smoke
   also read - and merged into the wiki repo's `.claude/settings.json`.
@@ -36,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -47,10 +52,13 @@ if str(KIT_SCRIPTS) not in sys.path:
 
 from wiki_config import (  # noqa: E402
     CONFIG_FILE_NAME,
+    CONTRACT_VERSION,
     DEFAULT_CONTRACT,
+    HOOK_MARKER,
     OVERLAY_FILE_NAME,
     ConfigError,
     WikiConfig,
+    _git_common_root,
     contract_deny_rules,
     git_hooks_dir,
     load_config,
@@ -148,6 +156,107 @@ def default_wiki_toml(name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def kit_head() -> str:
+    return run(["git", "-C", str(KIT_ROOT), "rev-parse", "HEAD"]).strip()
+
+
+def stamp_kit(target: Path, written: list[Path]) -> None:
+    """The [kit] stamp is installer-owned: the contract version and kit
+    commit this deployment was installed from (boardkit's stamp
+    pattern). Rewritten in place on every install; the doctor, not the
+    installer, judges drift afterward."""
+    path = target / CONFIG_FILE_NAME
+    text = path.read_text(encoding="utf-8")
+    head = kit_head()
+    block = (
+        "[kit]\n"
+        f"contract_version = {CONTRACT_VERSION}\n"
+        f'commit = "{head}"\n'
+    )
+    section = re.search(
+        r"(?ms)^\[kit\][ \t]*(?:#[^\n]*)?\n.*?(?=^[ \t]*\[|\Z)", text
+    )
+    if section is None and re.search(r"(?m)^\s*\[\s*kit\s*\]", text):
+        raise InstallError(
+            f"{path} has a [kit] header in a form the installer cannot "
+            "safely edit; canonicalize it by hand"
+        )
+    if section is None:
+        new_text = (text if text.endswith("\n") else text + "\n") + "\n" + block
+    else:
+        if section.group(0).strip() == block.strip():
+            note("✓ kit stamp up to date")
+            return
+        new_text = text[: section.start()] + block + "\n" + text[section.end():]
+    path.write_text(new_text, encoding="utf-8")
+    if path not in written:
+        written.append(path)
+    note(f"✓ kit stamp recorded (contract v{CONTRACT_VERSION}, {head[:12]})")
+
+
+def _config_root(target: Path) -> Path:
+    """The checkout that owns the machine-local overlay: the main
+    checkout, exactly where the pre-commit wrapper looks (the parent
+    of the git common dir). A layout where git cannot locate the main
+    checkout fails loud at install time instead of producing a hook
+    that can never resolve."""
+    main = _git_common_root(target)
+    if main is None:
+        raise InstallError(
+            f"cannot locate the main checkout for {target}; the "
+            "machine-local overlay must live there for the pre-commit "
+            "wrapper to find it"
+        )
+    return main
+
+
+def ensure_kit_path(target: Path, written: list[Path]) -> None:
+    """The machine-local record of where the kit checkout lives on this
+    machine (knob 11's [tools] form): the pre-commit wrapper reads it
+    at run time instead of baking a path. Written at the config root so
+    install from a linked worktree lands where the wrapper looks."""
+    path = _config_root(target) / OVERLAY_FILE_NAME
+    line = f'kit = "{KIT_ROOT}"'
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    tools = re.search(
+        r"(?ms)^\[tools\][ \t]*(?:#[^\n]*)?\n.*?(?=^[ \t]*\[|\Z)", text
+    )
+    if tools is None and re.search(r"(?m)^\s*\[\s*tools\s*\]", text):
+        raise InstallError(
+            f"{path} has a [tools] header in a form the installer "
+            "cannot safely edit; canonicalize it by hand"
+        )
+    if tools is not None:
+        section = tools.group(0)
+        stray = re.search(r"(?m)^[ \t]*kit[ \t]*=[ \t]*\S.*$", section)
+        new_section, count = re.subn(
+            r'(?m)^[ \t]*kit[ \t]*=[ \t]*"[^"]*"[ \t]*$', line, section
+        )
+        if count == 0 and stray is not None:
+            raise InstallError(
+                f"{path} has a [tools] kit line in a form the installer "
+                f"cannot safely rewrite: {stray.group(0).strip()!r}; "
+                "put it in the canonical double-quoted form by hand"
+            )
+        if count == 0:
+            new_section = section.rstrip("\n") + "\n" + line + "\n"
+        if new_section == section:
+            note("✓ kit path up to date in the overlay")
+            return
+        new_text = text[: tools.start()] + new_section + text[tools.end():]
+    else:
+        new_text = text
+        if new_text and not new_text.endswith("\n"):
+            new_text += "\n"
+        if new_text:
+            new_text += "\n"
+        new_text += "[tools]\n" + line + "\n"
+    path.write_text(new_text, encoding="utf-8")
+    # Deliberately not in `written`: the overlay is gitignored
+    # machine-local state and must never reach the initial commit.
+    note("✓ kit path recorded in the machine-local overlay")
+
+
 def seed_file(path: Path, content: str, label: str, written: list[Path]) -> None:
     """Non-destructive write: an existing path is left in place, whatever
     it holds (decision-4 tweak: install around pre-existing content)."""
@@ -196,20 +305,41 @@ def hooks_dir(target: Path) -> Path:
     return git_hooks_dir(target)
 
 
-HOOK_MARKER = "# wiki-kit pre-commit wrapper"
-
-
 def hook_wrapper_text() -> str:
-    """The hook is a generated wrapper, not a symlink: the kit script
-    needs a python that can import jsonschema, and `#!/usr/bin/env
-    python3` under git would resolve to whatever the machine's PATH
-    says. The wrapper pins the interpreter that ran the install and
-    exec's the kit's CURRENT script, so kit updates apply without a
-    reinstall. .git/hooks is machine-local, so the baked path is legal."""
+    """The hook is a generated wrapper, not a symlink, and it bakes no
+    machine paths: at run time it reads the kit checkout path from the
+    deployment's machine-local overlay ([tools] kit) - located through
+    the git common dir so a linked worktree reaches the main checkout's
+    overlay - and probes for a python that can import jsonschema. Kit
+    moves and interpreter changes never strand it; reinstalling
+    refreshes the one overlay record."""
     return (
         "#!/bin/sh\n"
         f"{HOOK_MARKER}\n"
-        f'exec "{sys.executable}" "{KIT_SCRIPTS / "pre-commit"}" "$@"\n'
+        'COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir) || {\n'
+        '  echo "pre-commit: cannot locate the git common dir" >&2\n'
+        "  exit 1\n"
+        "}\n"
+        'MAIN_ROOT=$(dirname "$COMMON_DIR")\n'
+        f'OVERLAY="$MAIN_ROOT/{OVERLAY_FILE_NAME}"\n'
+        "KIT_ROOT=$(sed -n 's/^[ \\t]*kit[ \\t]*=[ \\t]*\"\\([^\"]*\\)\""
+        "[ \\t\\r]*$/\\1/p' \"$OVERLAY\" 2>/dev/null | head -n 1)\n"
+        'if [ -z "$KIT_ROOT" ]; then\n'
+        '  echo "pre-commit: no [tools] kit path in $OVERLAY; '
+        're-run the wiki-kit installer" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ -x "$KIT_ROOT/.venv/bin/python" ] && '
+        '"$KIT_ROOT/.venv/bin/python" -c "import jsonschema" 2>/dev/null; then\n'
+        '  PYTHON="$KIT_ROOT/.venv/bin/python"\n'
+        'elif python3 -c "import jsonschema" 2>/dev/null; then\n'
+        "  PYTHON=python3\n"
+        "else\n"
+        '  echo "pre-commit: no jsonschema-capable python found '
+        '(tried $KIT_ROOT/.venv/bin/python and python3)" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'exec "$PYTHON" "$KIT_ROOT/scripts/pre-commit" "$@"\n'
     )
 
 
@@ -346,6 +476,8 @@ def install(target: Path, no_scheduler: bool) -> None:
         written,
     )
     config = load_config(target)
+    stamp_kit(target, written)
+    ensure_kit_path(target, written)
     install_hook(target)
     # build-pending stamps generated_at_utc, so an unconditional run would
     # dirty the tree on every reinstall; build only when the projection is

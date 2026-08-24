@@ -24,11 +24,16 @@ K11 adoption, if K10 rules to proceed, in the private wiki repo.
   only.
 
 The overlay is allowlisted, not open: it may set exactly
-`companions.<name>.path`, `[memory.triage].extra_dirs`, and `[tools].*`.
-Any other key appearing in `wiki.local.toml` is a doctor error - a
-machine overlay must never be able to rewrite identity, contract, or
-protection semantics on one machine. Within the allowlist, the overlay
-value wins.
+`companions.<name>.path`, `[memory.triage].extra_dirs`,
+`[memory].projects_root`, and `[tools].*`. Any other key appearing in
+`wiki.local.toml` is a doctor error - a machine overlay must never be
+able to rewrite identity, contract, or protection semantics on one
+machine. Within the allowlist, the overlay value wins.
+
+The overlay lives at the MAIN checkout: a linked worktree of the wiki
+repo reads the main checkout's `wiki.local.toml` through the git
+common-dir rule, the same fallback the dock resolver uses for
+consumers (a worktree's own overlay is ignored, never merged).
 
 The split mirrors the dock's manifest/overlay rule
 (`docking-spec-2026-08-16.md`): no machine paths in tracked files. The
@@ -163,6 +168,14 @@ garden_reminder = "16:00"
 # morning-reminder.sh re-derives independently today. One source here.
 report_dir = "reports/night"
 commit_prefix = "night:"
+
+[kit]
+# Installer-owned stamp (boardkit's stamp pattern): the contract
+# version and kit commit this deployment was installed from. Rewritten
+# on every install; the doctor flags drift between the stamp and the
+# kit in front of it. Not a machine path, so committed is legal.
+contract_version = 1
+commit = "0000000000000000000000000000000000000000"
 ```
 
 ```toml
@@ -184,6 +197,10 @@ extra_dirs = ["-home-alex-src-widget-docs"]
 uv = "/opt/homebrew/bin/uv"
 notifier = "/opt/homebrew/bin/terminal-notifier"   # notify-send on Linux
 git = "/usr/bin/git"
+# Where the kit checkout lives on this machine. Written by the
+# installer; the pre-commit wrapper resolves the kit through this key
+# at run time instead of baking a path into the hook.
+kit = "/home/alex/src/wiki-kit"
 ```
 
 ## Knob coverage check

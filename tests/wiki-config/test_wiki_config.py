@@ -545,6 +545,25 @@ class ResolveWikiRootTest(ResolverCase):
             wiki_config.resolve_wiki_root()
         self.assertIn("dock this repo first", str(caught.exception))
 
+    def test_common_dir_probe_failure_is_unfindable(self) -> None:
+        """A failed --git-common-dir probe (e.g. git too old for
+        --path-format) must read as unfindable, never as the git dir
+        itself."""
+        repo = self.init_repo(self.base / "consumer")
+        real_run = subprocess.run
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if "--git-common-dir" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 128, "", "fatal: unknown option"
+                )
+            return real_run(cmd, **kwargs)
+
+        with mock.patch.object(
+            wiki_config.subprocess, "run", side_effect=fake_run
+        ):
+            self.assertIsNone(wiki_config._git_common_root(repo))
+
 
 FULL_WIKI_TOML = """\
 [wiki]
@@ -568,6 +587,7 @@ class OverlayConfigTest(ResolverCase):
     def make_full_wiki(self) -> Path:
         root = self.init_repo(self.base / "acme-notes")
         (root / "wiki.toml").write_text(FULL_WIKI_TOML, encoding="utf-8")
+        self.commit_all(root)
         return root
 
     def write_wiki_overlay(self, root: Path, text: str) -> None:
@@ -627,6 +647,103 @@ class OverlayConfigTest(ResolverCase):
         with self.assertRaises(ConfigError) as caught:
             wiki_config.load_config(root)
         self.assertIn("absolute", str(caught.exception))
+
+    def test_worktree_reads_the_main_checkout_overlay(self) -> None:
+        """The wiki repo's own config pair follows the dock's common-dir
+        rule: a linked worktree has no overlay of its own and reads the
+        main checkout's wiki.local.toml."""
+        root = self.make_full_wiki()
+        self.write_wiki_overlay(root, '[tools]\nkit = "/opt/kit"\n')
+        worktree = self.base / "linked"
+        self.git(root, "worktree", "add", str(worktree))
+        self.assertFalse((worktree / "wiki.local.toml").exists())
+
+        config = wiki_config.load_config(worktree)
+
+        self.assertEqual(config.tools["kit"], "/opt/kit")
+
+    def test_worktree_overlay_is_ignored_in_favor_of_main(self) -> None:
+        root = self.make_full_wiki()
+        self.write_wiki_overlay(root, '[tools]\nkit = "/main/kit"\n')
+        worktree = self.base / "linked"
+        self.git(root, "worktree", "add", str(worktree))
+        self.write_wiki_overlay(worktree, '[tools]\nkit = "/wt/kit"\n')
+
+        config = wiki_config.load_config(worktree)
+
+        self.assertEqual(config.tools["kit"], "/main/kit")
+
+    def test_no_fallback_when_the_main_checkout_has_no_overlay(self) -> None:
+        root = self.make_full_wiki()
+        worktree = self.base / "linked"
+        self.git(root, "worktree", "add", str(worktree))
+
+        config = wiki_config.load_config(worktree)
+
+        self.assertEqual(config.tools, {})
+
+
+class KitStampTest(ResolverCase):
+    """The [kit] stamp: type-validated at load; supported-ness is the
+    doctor's call, so any integer version parses."""
+
+    def make_stamped_wiki(self, stamp: str) -> Path:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(
+            FULL_WIKI_TOML + "\n" + stamp, encoding="utf-8"
+        )
+        return root
+
+    def test_valid_stamp_parses(self) -> None:
+        root = self.make_stamped_wiki(
+            '[kit]\ncontract_version = 1\ncommit = "abc123"\n'
+        )
+        config = wiki_config.load_config(root)
+        self.assertIsNotNone(config.kit_stamp)
+        self.assertEqual(config.kit_stamp.contract_version, 1)
+        self.assertEqual(config.kit_stamp.commit, "abc123")
+        rendered = wiki_config._config_as_json(config)
+        self.assertEqual(
+            rendered["kit"], {"contract_version": 1, "commit": "abc123"}
+        )
+
+    def test_absent_stamp_is_none(self) -> None:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(FULL_WIKI_TOML, encoding="utf-8")
+        config = wiki_config.load_config(root)
+        self.assertIsNone(config.kit_stamp)
+        self.assertIsNone(wiki_config._config_as_json(config)["kit"])
+
+    def test_future_version_parses_for_the_doctor_to_judge(self) -> None:
+        root = self.make_stamped_wiki(
+            '[kit]\ncontract_version = 99\ncommit = "abc123"\n'
+        )
+        config = wiki_config.load_config(root)
+        self.assertEqual(config.kit_stamp.contract_version, 99)
+
+    def test_non_integer_version_fails_loud(self) -> None:
+        root = self.make_stamped_wiki(
+            '[kit]\ncontract_version = "one"\ncommit = "abc123"\n'
+        )
+        with self.assertRaises(ConfigError) as caught:
+            wiki_config.load_config(root)
+        self.assertIn("contract_version", str(caught.exception))
+
+    def test_empty_commit_fails_loud(self) -> None:
+        root = self.make_stamped_wiki(
+            '[kit]\ncontract_version = 1\ncommit = ""\n'
+        )
+        with self.assertRaises(ConfigError) as caught:
+            wiki_config.load_config(root)
+        self.assertIn("commit", str(caught.exception))
+
+    def test_unknown_stamp_key_fails_loud(self) -> None:
+        root = self.make_stamped_wiki(
+            '[kit]\ncontract_version = 1\ncommit = "abc"\nextra = 1\n'
+        )
+        with self.assertRaises(ConfigError) as caught:
+            wiki_config.load_config(root)
+        self.assertIn("unknown keys", str(caught.exception))
 
 
 if __name__ == "__main__":

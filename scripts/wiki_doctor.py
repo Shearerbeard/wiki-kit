@@ -28,8 +28,14 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from wiki_config import (  # noqa: E402
+    CONFIG_FILE_NAME,
+    HOOK_MARKER,
+    KIT_ROOT,
+    OVERLAY_FILE_NAME,
+    SUPPORTED_CONTRACT_VERSIONS,
     ConfigError,
     WikiConfig,
+    _git_common_root,
     contract_deny_rules,
     git_hooks_dir,
     load_config,
@@ -426,14 +432,14 @@ def check_links(ctx: DoctorContext) -> CheckOutcome:
 
 
 def check_install(ctx: DoctorContext) -> CheckOutcome:
-    """Installer-owned state: the pre-commit hook wrapper and the
-    [contract]-derived Claude deny rules."""
+    """Installer-owned state: the pre-commit hook wrapper, the overlay
+    kit path it resolves through, and the [contract]-derived Claude
+    deny rules."""
     name = "install"
     findings: list[Finding] = []
     root = ctx.repo_root
     try:
         hook = git_hooks_dir(root) / "pre-commit"
-        expected = SCRIPT_DIR / "pre-commit"
         if not hook.is_file():
             findings.append(
                 fail(
@@ -442,12 +448,42 @@ def check_install(ctx: DoctorContext) -> CheckOutcome:
                     hook,
                 )
             )
-        elif str(expected) not in hook.read_text(encoding="utf-8"):
+        else:
+            text = hook.read_text(encoding="utf-8")
+            if (
+                HOOK_MARKER not in text
+                or OVERLAY_FILE_NAME not in text
+                or "scripts/pre-commit" not in text
+            ):
+                findings.append(
+                    fail(
+                        name,
+                        "pre-commit hook is not the kit's runtime-resolving "
+                        "wrapper; re-run the kit installer",
+                        hook,
+                    )
+                )
+        if "kit" not in ctx.config.tools:
             findings.append(
                 fail(
                     name,
-                    f"pre-commit hook does not exec the kit's {expected}",
-                    hook,
+                    f"no [tools] kit path in {OVERLAY_FILE_NAME}; the "
+                    "pre-commit wrapper resolves the kit through it - "
+                    "re-run the kit installer",
+                    root / OVERLAY_FILE_NAME,
+                )
+            )
+        if _git_common_root(root) is None and (
+            root / OVERLAY_FILE_NAME
+        ).is_file():
+            findings.append(
+                warn(
+                    name,
+                    "git cannot locate the main checkout from here "
+                    "(exotic git layout); tools read this root's "
+                    "overlay, but the pre-commit wrapper cannot resolve "
+                    "it - the hook cannot work in this layout",
+                    root / OVERLAY_FILE_NAME,
                 )
             )
         settings_path = root / ".claude" / "settings.json"
@@ -651,6 +687,76 @@ def check_board(ctx: DoctorContext) -> CheckOutcome:
     )
 
 
+def check_kit_stamp(ctx: DoctorContext) -> CheckOutcome:
+    """The [kit] stamp records the contract version and kit commit the
+    deployment was installed from; skew between the stamp and the kit
+    in front of us is kit-to-deployment drift (boardkit's stamp
+    pattern). Supported-ness lives here rather than in load_config, so
+    an unknown future version reads as a finding, not a crash in every
+    tool."""
+    name = "kit-stamp"
+    stamp = ctx.config.kit_stamp
+    if stamp is None:
+        return outcome(
+            name,
+            (
+                warn(
+                    name,
+                    "deployment carries no [kit] stamp (pre-stamp "
+                    "install); re-run the kit installer to record one",
+                    ctx.repo_root / CONFIG_FILE_NAME,
+                ),
+            ),
+            "no kit stamp",
+        )
+    findings: list[Finding] = []
+    if stamp.contract_version not in SUPPORTED_CONTRACT_VERSIONS:
+        findings.append(
+            fail(
+                name,
+                f"kit contract version {stamp.contract_version} is not "
+                f"supported by this kit (supports "
+                f"{sorted(SUPPORTED_CONTRACT_VERSIONS)}); install from a "
+                "kit whose contract matches",
+                ctx.repo_root / CONFIG_FILE_NAME,
+            )
+        )
+    kit_path = Path(ctx.config.tool("kit", str(KIT_ROOT))).expanduser()
+    result = subprocess.run(
+        ["git", "-C", str(kit_path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        findings.append(
+            warn(
+                name,
+                f"the deployment's recorded kit path {kit_path} is not a "
+                "git checkout; re-run the installer to refresh "
+                "[tools] kit",
+                ctx.repo_root / OVERLAY_FILE_NAME,
+            )
+        )
+    else:
+        head = result.stdout.strip()
+        if head != stamp.commit:
+            findings.append(
+                warn(
+                    name,
+                    f"deployment stamped at {stamp.commit[:12]} but the "
+                    f"kit checkout is at {head[:12]}; re-run the "
+                    "installer if the drift is not a kit update in "
+                    "flight",
+                    ctx.repo_root / CONFIG_FILE_NAME,
+                )
+            )
+    return outcome(
+        name,
+        findings,
+        f"stamped at {stamp.commit[:12]}, contract v{stamp.contract_version}",
+    )
+
+
 Check = Callable[[DoctorContext], CheckOutcome]
 
 
@@ -666,6 +772,7 @@ CHECKS: tuple[Check, ...] = (
     check_install,
     check_captures,
     check_board,
+    check_kit_stamp,
 )
 
 

@@ -52,12 +52,24 @@ DOCK_MANIFEST_NAME = "manifest.toml"
 DOCK_OVERLAY_NAME = "local.toml"
 DOCK_ENV = "WIKI_DOCK"
 
+# The marker the installer's generated pre-commit wrapper carries and
+# the doctor verifies: one source, two consumers (knob 13's rule).
+HOOK_MARKER = "# wiki-kit pre-commit wrapper"
+
 # The only slug rule v1 ships: an absolute path dash-encodes to the
 # per-project memory directory name (`/home/alex/src/widget` ->
 # `-home-alex-src-widget`).
 SLUG_RULE_DASH_ENCODED = "dash-encoded-absolute-path"
 
 POSTURES = ("committed", "gitignored", "invisible")
+
+# The deployment contract version (boardkit's stamp pattern): a
+# deployment's [kit] table records which contract version and kit
+# commit stamped it. Type-validated at load; whether the version is
+# SUPPORTED is the doctor's call, so an unknown future version reads
+# as a doctor finding rather than a crash in every tool.
+CONTRACT_VERSION = 1
+SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
 
 # Kit defaults the init step writes into a new deployment's wiki.toml.
 # Runtime consumers (installer, doctor, smoke) read the deployment's own
@@ -100,7 +112,16 @@ _COMPANION_KEYS = {
 _CONTRACT_KEYS = {"protected", "external_allow", "skills", "global_skills"}
 _SCHEDULE_KEYS = {"night", "morning", "garden_reminder"}
 _NIGHT_KEYS = {"report_dir", "commit_prefix"}
-_TOP_LEVEL_TABLES = {"wiki", "memory", "companions", "contract", "schedule", "night"}
+_KIT_KEYS = {"contract_version", "commit"}
+_TOP_LEVEL_TABLES = {
+    "wiki",
+    "memory",
+    "companions",
+    "contract",
+    "schedule",
+    "night",
+    "kit",
+}
 
 
 class ConfigError(Exception):
@@ -192,6 +213,15 @@ class NightConventions:
 
 
 @dataclass(frozen=True)
+class KitStamp:
+    """The [kit] stamp: which contract version and kit commit stamped
+    this deployment. Absent on pre-stamp deployments."""
+
+    contract_version: int
+    commit: str
+
+
+@dataclass(frozen=True)
 class WikiConfig:
     root: Path
     name: str
@@ -207,6 +237,7 @@ class WikiConfig:
     # Overlay-only machine path: where per-project agent memory lives on
     # this machine. None means the consumer's platform default applies.
     projects_root: Path | None = None
+    kit_stamp: KitStamp | None = None
 
     def companion(self, name: str | None = None) -> Companion:
         if name is None:
@@ -345,9 +376,12 @@ def _git_common_root(start: Path) -> Path | None:
         capture_output=True,
         text=True,
     )
-    if common.returncode == 0 and _same_path(
-        first, Path(common.stdout.strip())
-    ):
+    if common.returncode != 0:
+        # The probe the first==common guard depends on failed (e.g. git
+        # too old for --path-format): unfindable is the honest answer,
+        # and the wrapper's identical probe fails loud there too.
+        return None
+    if _same_path(first, Path(common.stdout.strip())):
         return None
     return first
 
@@ -785,7 +819,14 @@ def load_config(root: Path) -> WikiConfig:
         "only one)",
     )
 
-    overlay_path = root / OVERLAY_FILE_NAME
+    # The overlay lives at the MAIN checkout, exactly where the
+    # pre-commit wrapper looks: a linked worktree never has its own
+    # (an overlay at the worktree root is ignored, never merged). A
+    # reader in a layout where git cannot locate the main checkout
+    # falls back to the root's own path - the doctor flags the hook
+    # mismatch there.
+    overlay_root = _git_common_root(root) or root
+    overlay_path = overlay_root / OVERLAY_FILE_NAME
     overlay = _load_toml(overlay_path) if overlay_path.is_file() else {}
     _check_overlay_allowlist(overlay, overlay_path)
     overlay_companions = overlay.get("companions", {})
@@ -860,6 +901,28 @@ def load_config(root: Path) -> WikiConfig:
         f"{overlay_path} [memory.triage].extra_dirs must be an array of strings",
     )
 
+    kit_stamp: KitStamp | None = None
+    kit_table = raw.get("kit")
+    if kit_table is not None:
+        _require(
+            isinstance(kit_table, dict),
+            f"{config_path} [kit] must be a table",
+        )
+        _reject_unknown(set(kit_table), _KIT_KEYS, f"{config_path} [kit]")
+        stamp_version = kit_table.get("contract_version")
+        _require(
+            isinstance(stamp_version, int) and not isinstance(stamp_version, bool),
+            f"{config_path} [kit].contract_version must be an integer",
+        )
+        stamp_commit = kit_table.get("commit")
+        _require(
+            isinstance(stamp_commit, str) and stamp_commit != "",
+            f"{config_path} [kit].commit must be a non-empty string",
+        )
+        kit_stamp = KitStamp(
+            contract_version=stamp_version, commit=stamp_commit
+        )
+
     return WikiConfig(
         root=root,
         name=name,
@@ -877,6 +940,7 @@ def load_config(root: Path) -> WikiConfig:
             if overlay_projects_root
             else None
         ),
+        kit_stamp=kit_stamp,
     )
 
 
@@ -919,6 +983,14 @@ def _config_as_json(config: WikiConfig) -> dict:
         "tools": config.tools,
         "projects_root": (
             str(config.projects_root) if config.projects_root else None
+        ),
+        "kit": (
+            {
+                "contract_version": config.kit_stamp.contract_version,
+                "commit": config.kit_stamp.commit,
+            }
+            if config.kit_stamp
+            else None
         ),
         "triage_project_dirs": _triage_dirs_or_none(config),
     }

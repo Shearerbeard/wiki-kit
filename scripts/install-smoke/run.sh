@@ -140,7 +140,23 @@ check "first install run exits zero on a blank fixture" \
   "$KIT/scripts/install.sh" --wiki "$FIXTURE" --no-scheduler
 check_shell "wiki.toml seeded" '[ -f "'"$FIXTURE"'/wiki.toml" ]'
 check_shell "pre-commit hook wrapper execs the kit script" \
-  'grep -q "'"$KIT"'/scripts/pre-commit" "'"$FIXTURE"'/.git/hooks/pre-commit" && [ -x "'"$FIXTURE"'/.git/hooks/pre-commit" ]'
+  'grep -q "# wiki-kit pre-commit wrapper" "'"$FIXTURE"'/.git/hooks/pre-commit" && grep -q "scripts/pre-commit" "'"$FIXTURE"'/.git/hooks/pre-commit" && [ -x "'"$FIXTURE"'/.git/hooks/pre-commit" ]'
+check_shell "install records the kit stamp and overlay kit path" 'python3 - <<PYEOF
+import subprocess, sys, tomllib
+fixture = "'"$FIXTURE"'"
+kit = "'"$KIT"'"
+sys.path.insert(0, f"{kit}/scripts")
+import wiki_config
+stamp = tomllib.load(open(f"{fixture}/wiki.toml", "rb"))["kit"]
+head = subprocess.run(
+    ["git", "-C", kit, "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+assert stamp["contract_version"] == wiki_config.CONTRACT_VERSION, stamp
+assert stamp["commit"] == head, (stamp, head)
+overlay = tomllib.load(open(f"{fixture}/wiki.local.toml", "rb"))
+assert overlay["tools"]["kit"] == kit, overlay
+PYEOF'
 check_shell "initial commit exists and tracks the projections" \
   'cd "'"$FIXTURE"'" && git rev-parse -q --verify HEAD >/dev/null && git ls-files | grep -qx "wiki/log.md" && git ls-files | grep -qx "wiki/pending/index.json"'
 check_shell "orientation skeleton rendered with a Quickstart" \
@@ -166,6 +182,23 @@ PYEOF'
 
 check "doctor clean on the blank fixture" bash -c \
   'python3 "'"$KIT"'/scripts/wiki-doctor.py" --wiki "'"$FIXTURE"'" --strict-warnings'
+
+check_shell "doctor flags a drifted kit stamp" '
+  cd "'"$FIXTURE"'" &&
+  python3 -c "
+import re
+text = open(\"wiki.toml\").read()
+open(\"wiki.toml\", \"w\").write(
+    re.sub(r\"(?m)^contract_version = [0-9]+\$\", \"contract_version = 999\", text))
+" &&
+  if python3 "'"$KIT"'/scripts/wiki-doctor.py" --wiki "'"$FIXTURE"'" >/tmp/drift.log 2>&1; then
+    git checkout HEAD -- wiki.toml
+    echo "doctor passed on a drifted stamp" >&2
+    false
+  fi
+  git checkout HEAD -- wiki.toml
+  grep -q "contract version 999" /tmp/drift.log
+'
 
 # ---- one full handoff -> garden -> render cycle ----------------------------
 check_shell "new-handoff writes the first event" '

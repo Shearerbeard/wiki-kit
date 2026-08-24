@@ -55,13 +55,22 @@ def test_blank_repo_boot(tmp_path: Path) -> None:
     assert "## Quickstart" in orientation
     assert "newly initialized" in orientation
 
+    # The kit stamp: committed wiki.toml records contract version and
+    # kit commit; the machine-local overlay records the kit checkout.
+    assert config["kit"]["contract_version"] == 1
+    assert config["kit"]["commit"] == git(KIT_ROOT, "rev-parse", "HEAD").strip()
+    overlay = tomllib.load((target / "wiki.local.toml").open("rb"))
+    assert overlay["tools"]["kit"] == str(KIT_ROOT)
+
     # The mechanical layer the old installer never wired (recon 03): a
-    # generated wrapper pinning the installing interpreter, exec-ing the
-    # kit's current script.
+    # generated wrapper that bakes no machine paths - it resolves the
+    # kit from the deployment's overlay at run time.
     hook = target / ".git" / "hooks" / "pre-commit"
     hook_text = hook.read_text()
     assert "# wiki-kit pre-commit wrapper" in hook_text
-    assert str(KIT_ROOT / "scripts" / "pre-commit") in hook_text
+    assert "wiki.local.toml" in hook_text
+    assert "scripts/pre-commit" in hook_text
+    assert sys.executable not in hook_text
     assert hook.stat().st_mode & 0o111, "hook must be executable"
 
     # Deny rules derive from the deployment's own [contract].
@@ -432,6 +441,157 @@ def test_smoke_image_names_are_repo_derived() -> None:
     assert "${IMAGE_NAME:-$KIT_NAME-install-smoke" in text
     assert "${CONTAINER_NAME:-$KIT_NAME-install-smoke" in text
     assert "wiki-kit-install-smoke" not in text
+
+
+PREEXISTING_STALE_STAMP = """\
+[wiki]
+name = "acme-notes"
+
+[contract]
+protected = ["wiki/log.md"]
+external_allow = []
+skills = []
+global_skills = []
+
+[kit]
+contract_version = 0
+commit = "stale"
+
+[schedule]
+night = "04:00"
+"""
+
+
+def test_stamp_replaces_a_stale_section_in_place(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(PREEXISTING_STALE_STAMP)
+
+    result = run_install(target)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    text = (target / "wiki.toml").read_text()
+    assert text.count("[kit]") == 1
+    assert "contract_version = 0" not in text
+    assert 'commit = "stale"' not in text
+    head = git(KIT_ROOT, "rev-parse", "HEAD").strip()
+    assert f'commit = "{head}"' in text
+    # The section after the replaced one survives untouched.
+    assert 'night = "04:00"' in text
+
+
+def test_overlay_kit_update_preserves_other_tools(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.local.toml").write_text(
+        '[tools]\nuv = "/opt/uv"\nkit = "/old/kit"\n'
+    )
+
+    result = run_install(target)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    overlay = (target / "wiki.local.toml").read_text()
+    assert 'uv = "/opt/uv"' in overlay
+    assert overlay.count("kit = ") == 1
+    assert f'kit = "{KIT_ROOT}"' in overlay
+    assert "/old/kit" not in overlay
+
+
+def test_overlay_unrewritable_kit_line_fails_directed(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.local.toml").write_text("[tools]\nkit = '/single/quoted'\n")
+
+    result = run_install(target)
+
+    assert result.returncode == 1
+    assert "cannot safely rewrite" in result.stderr
+
+
+def test_overlay_tools_header_with_comment_is_rewritten_not_duplicated(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.local.toml").write_text(
+        '[tools] # binaries\nuv = "/opt/uv"\n'
+    )
+
+    result = run_install(target)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    overlay = (target / "wiki.local.toml").read_text()
+    assert overlay.count("[tools]") == 1
+    assert 'uv = "/opt/uv"' in overlay
+    assert f'kit = "{KIT_ROOT}"' in overlay
+
+
+def test_overlay_stray_tools_header_fails_directed(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.local.toml").write_text("[ tools ]\n")
+
+    result = run_install(target)
+
+    assert result.returncode == 1
+    assert "cannot safely edit" in result.stderr
+
+
+def test_install_fails_loud_when_main_checkout_unfindable(
+    tmp_path: Path,
+) -> None:
+    # A separate-git-dir repo reports its git dir as the first worktree;
+    # git cannot locate the main checkout there, so the overlay has no
+    # honest home and the install must fail rather than strand the hook.
+    target = tmp_path / "wiki"
+    (tmp_path / "meta").mkdir()
+    subprocess.run(
+        [
+            "git",
+            "init",
+            "--separate-git-dir",
+            str(tmp_path / "meta" / "wiki.git"),
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = run_install(target)
+
+    assert result.returncode == 1
+    assert "cannot locate the main checkout" in result.stderr
+
+
+sys.path.insert(0, str(KIT_ROOT / "scripts"))
+import wiki_install  # noqa: E402
+
+
+def test_wrapper_error_lines_render_as_single_shell_lines() -> None:
+    wrapper = wiki_install.hook_wrapper_text()
+    for line in wrapper.splitlines():
+        assert not line.startswith('"(tried'), line
+    assert (
+        'echo "pre-commit: no jsonschema-capable python found '
+        "(tried" in wrapper
+    )
+
+
+def test_install_from_a_worktree_writes_the_overlay_at_main(
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "main-wiki"
+    assert run_install(main).returncode == 0
+    worktree = tmp_path / "wt"
+    git(main, "worktree", "add", str(worktree))
+
+    result = run_install(worktree)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    overlay = tomllib.load((main / "wiki.local.toml").open("rb"))
+    assert overlay["tools"]["kit"] == str(KIT_ROOT)
+    assert not (worktree / "wiki.local.toml").exists()
 
 
 def test_existing_repo_with_history_gets_no_new_commit(tmp_path: Path) -> None:
