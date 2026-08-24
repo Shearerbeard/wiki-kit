@@ -23,6 +23,7 @@ testpaths = ["tests"]
 target-version = "py312"
 line-length = 88
 exclude = [
+    "scripts/wiki-dock.py",
     "scripts/wiki-event.py",
     "scripts/wiki-garden.py",
     "scripts/wiki-gh-sweep.py",
