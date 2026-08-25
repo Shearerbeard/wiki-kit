@@ -8,7 +8,9 @@ consumer-side docks:
 
 - install: write the manifest and overlay, apply the posture's ignore
   mechanics, and render the generated wiring (post-commit hook,
-  opencode handoff plugin) for companions with an outbox subpath.
+  opencode handoff plugin) for companions with an outbox subpath. With
+  --skills-dir, also render the contracted workflow skills
+  ([contract].skills) into the chosen repo-relative directories.
 - complete: create or update the overlay's [dock].path for an existing
   manifest - the command the resolver's fail-loud message names.
 - status: report what the resolver sees at a repo, read-only. Exit 1
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -60,6 +63,14 @@ IGNORE_LINES = {
 
 PLUGIN_REPO_PATH = ".opencode/plugins/handoff.ts"
 PLUGIN_MARKER = "OpenCode session.idle handoff plugin"
+
+# The kit's canonical skills (`.agents/skills/<name>/SKILL.md`) ARE the
+# parameterized templates: dock install renders {{KIT_ROOT}} from the
+# deployment overlay's [tools].kit and lands each contracted skill in the
+# consumer-chosen target directories.
+SKILLS_TEMPLATE_DIR = KIT_ROOT / ".agents" / "skills"
+SKILL_MARKER = "Rendered from the wiki-kit template"
+SKILL_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 POST_COMMIT_MARKER = "# wiki-kit post-commit wrapper"
 
@@ -161,12 +172,22 @@ def _git_exclude_file(repo: Path) -> Path:
     return path if path.is_absolute() else repo / path
 
 
-def apply_posture(repo: Path, posture: str, wiring_written: bool) -> None:
+def apply_posture(
+    repo: Path,
+    posture: str,
+    wiring_written: bool,
+    skill_dirs: tuple[str, ...] = (),
+) -> None:
     lines = list(IGNORE_LINES[posture])
     if wiring_written and posture != "committed":
         # Generated shims follow the posture (docking spec): tracked
         # when committed, covered by the same exclusion set otherwise.
         lines.append(PLUGIN_REPO_PATH)
+    if posture != "committed":
+        # Project-scoped skill renders are generated wiring too: the
+        # untracked postures exclude them so nothing wiki-related ever
+        # surfaces in git status.
+        lines.extend(f"{directory}/" for directory in skill_dirs)
     if posture == "invisible":
         path = _git_exclude_file(repo)
         label = "info/exclude"
@@ -261,6 +282,82 @@ def render_handoff_plugin(repo: Path, docs_subpath: str) -> None:
     note("✓ opencode handoff plugin rendered")
 
 
+def resolve_skill_targets(repo: Path, raw_targets: list[str]) -> list[Path]:
+    """Skill renders are project-scoped only (ruling D12): each target is
+    a repo-relative directory. Machine-global paths (~/.agents/skills,
+    ~/.claude/skills) are forbidden before adoption and refused here -
+    anything absolute or escaping the repo is one of those in disguise."""
+    targets: list[Path] = []
+    for raw in raw_targets:
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute():
+            raise DockError(
+                f"--skills-dir {raw} is not repo-relative; skill renders "
+                "are project-scoped only and machine-global paths "
+                "(~/.agents/skills, ~/.claude/skills) are forbidden "
+                "before adoption"
+            )
+        resolved = (repo / candidate).resolve()
+        if resolved != repo and repo not in resolved.parents:
+            raise DockError(
+                f"--skills-dir {raw} escapes the consumer repo; skill "
+                "renders are project-scoped only and machine-global "
+                "paths are forbidden before adoption"
+            )
+        if resolved not in targets:
+            targets.append(resolved)
+    return targets
+
+
+def check_skill_templates(skills: tuple[str, ...]) -> None:
+    """Preflight: every contracted skill must ship a template, so a failed
+    install never leaves the render half-applied."""
+    for name in skills:
+        path = SKILLS_TEMPLATE_DIR / name / "SKILL.md"
+        if not path.is_file():
+            raise DockError(
+                f"wiki.toml [contract].skills lists {name!r} but the kit "
+                f"ships no template at {path}"
+            )
+
+
+def render_skills(
+    skills: tuple[str, ...], targets: list[Path], kit_root: str
+) -> None:
+    """Render each contracted skill into every chosen target. Re-render
+    follows the handoff-plugin rule: a kit render updates in place, a
+    foreign same-name skill is left alone."""
+    for name in skills:
+        template_path = SKILLS_TEMPLATE_DIR / name / "SKILL.md"
+        content = template_path.read_text(encoding="utf-8").replace(
+            "{{KIT_ROOT}}", kit_root
+        )
+        leftover = sorted(set(SKILL_PLACEHOLDER_RE.findall(content)))
+        if leftover:
+            raise DockError(
+                f"{template_path} has unrendered placeholders: {leftover}"
+            )
+        for target in targets:
+            dest = target / name / "SKILL.md"
+            if dest.exists():
+                current = dest.read_text(encoding="utf-8")
+                if current == content:
+                    note(f"✓ skill {name!r} up to date at {dest}")
+                    continue
+                if SKILL_MARKER not in current:
+                    note(
+                        f"✓ skill {name!r} exists at {dest} and is not a "
+                        "kit render, left in place"
+                    )
+                    continue
+                dest.write_text(content, encoding="utf-8")
+                note(f"✓ skill {name!r} re-rendered at {dest}")
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+            note(f"✓ skill {name!r} rendered at {dest}")
+
+
 def _resolve_posture(flag: str | None, companion: Companion) -> str:
     """The companion table is the posture's one home (docking spec): an
     explicit flag may agree with it or supply it, never contradict."""
@@ -291,16 +388,26 @@ def cmd_install(args: argparse.Namespace) -> int:
     posture = _resolve_posture(args.posture, companion)
     dock_dir = repo / DOCK_DIR_NAME
     wired = companion.docs_subpath is not None
+    skill_targets = resolve_skill_targets(repo, args.skills_dir or [])
 
     # Every conflict check runs before any write: a failed install
     # leaves nothing half-applied.
     _check_manifest_slot(dock_dir, config.name, companion.name)
     if wired:
         _check_hook_slot(hooks / "post-commit")
+    if skill_targets:
+        check_skill_templates(config.contract.skills)
 
     write_manifest(dock_dir, config.name, companion.name)
     write_overlay(dock_dir, wiki_root)
-    apply_posture(repo, posture, wiring_written=wired)
+    apply_posture(
+        repo,
+        posture,
+        wiring_written=wired,
+        skill_dirs=tuple(
+            str(target.relative_to(repo)) for target in skill_targets
+        ),
+    )
     if wired:
         install_post_commit_hook(repo, wiki_root, companion.docs_subpath)
         render_handoff_plugin(repo, companion.docs_subpath)
@@ -308,6 +415,14 @@ def cmd_install(args: argparse.Namespace) -> int:
         note(
             "- companion has no docs_subpath; post-commit hook and "
             "opencode plugin skipped"
+        )
+    if skill_targets:
+        # {{KIT_ROOT}} renders from the deployment overlay's [tools].kit;
+        # absent one, the kit performing this dock is the kit on record.
+        render_skills(
+            config.contract.skills,
+            skill_targets,
+            config.tool("kit", str(KIT_ROOT)),
         )
 
     dock = load_dock(dock_dir)
@@ -380,6 +495,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="dock posture; defaults to the companion table's recorded "
         "posture and must not contradict it",
+    )
+    install_parser.add_argument(
+        "--skills-dir",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help="repo-relative directory the workflow skills render into; "
+        "repeatable (e.g. --skills-dir .agents/skills --skills-dir "
+        ".claude/skills). Project-scoped only: machine-global paths are "
+        "refused",
     )
     install_parser.set_defaults(func=cmd_install)
 

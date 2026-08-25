@@ -52,7 +52,7 @@ default_companion = "widget"
 [contract]
 protected = ["CLAUDE.local.md", "wiki/log.md"]
 external_allow = []
-skills = ["garden"]
+skills = ["garden", "handoff", "morning", "session-feedback"]
 global_skills = []
 
 [companions.widget]
@@ -319,6 +319,156 @@ class InstallTest(DockCase):
         self.assertEqual(code, 0)
         os.chdir(repo)
         self.assertEqual(wiki_config.resolve_wiki_root(), wiki)
+
+
+SKILL_NAMES = ("garden", "handoff", "morning", "session-feedback")
+
+
+class SkillRenderTest(DockCase):
+    def install_with_skills(
+        self, repo: Path, wiki: Path, *extra: str
+    ) -> tuple[int, str]:
+        return run_cli(
+            "install",
+            "--wiki",
+            str(wiki),
+            "--repo",
+            str(repo),
+            "--companion",
+            "widget",
+            "--posture",
+            "committed",
+            *extra,
+        )
+
+    def rendered(self, repo: Path, target: str, name: str) -> str:
+        return (repo / target / name / "SKILL.md").read_text()
+
+    def test_renders_all_four_skills_into_every_chosen_dir(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install_with_skills(
+            repo,
+            wiki,
+            "--skills-dir",
+            ".agents/skills",
+            "--skills-dir",
+            ".claude/skills",
+        )
+        self.assertEqual(code, 0)
+        for target in (".agents/skills", ".claude/skills"):
+            for name in SKILL_NAMES:
+                text = self.rendered(repo, target, name)
+                self.assertIn(f"name: {name}", text)
+                # Fold shell line continuations before matching.
+                normalized = " ".join(
+                    text.replace("\\\n", " ").split()
+                )
+                self.assertIn(
+                    f"uv run --project {KIT_ROOT} {KIT_ROOT}/scripts/",
+                    normalized,
+                )
+                self.assertNotIn("{{", text)
+                self.assertNotIn("~/workspace/", text)
+
+    def test_kit_root_renders_from_the_overlay_tools_key(self) -> None:
+        wiki = self.make_wiki()
+        (wiki / "wiki.local.toml").write_text(
+            '[tools]\nkit = "/opt/custom-kit"\n', encoding="utf-8"
+        )
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        text = self.rendered(repo, ".agents/skills", "morning")
+        normalized = " ".join(text.replace("\\\n", " ").split())
+        self.assertIn(
+            "uv run --project /opt/custom-kit "
+            "/opt/custom-kit/scripts/wiki-event.py",
+            normalized,
+        )
+
+    def test_machine_global_target_is_refused_before_any_write(
+        self,
+    ) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        for target in ("~/.agents/skills", "/tmp/absolute-skills"):
+            code, _ = self.install_with_skills(
+                repo, wiki, "--skills-dir", target
+            )
+            self.assertEqual(code, 1, target)
+        self.assertFalse((repo / ".wiki").exists())
+
+    def test_target_escaping_the_repo_is_refused(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", "../outside"
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse((repo / ".wiki").exists())
+        self.assertFalse((self.base / "outside").exists())
+
+    def test_reinstall_over_an_existing_render_is_idempotent(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install_with_skills(repo, wiki, "--skills-dir", ".agents/skills")
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("skill 'garden' up to date", out)
+
+    def test_changed_kit_render_updates_on_reinstall(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install_with_skills(repo, wiki, "--skills-dir", ".agents/skills")
+        dest = repo / ".agents" / "skills" / "garden" / "SKILL.md"
+        dest.write_text(dest.read_text() + "\nstale line\n")
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("skill 'garden' re-rendered", out)
+        self.assertNotIn("stale line", dest.read_text())
+
+    def test_foreign_same_name_skill_is_left_in_place(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dest = repo / ".agents" / "skills" / "garden"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("---\nname: garden\n---\nmine\n")
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("left in place", out)
+        self.assertEqual(
+            (dest / "SKILL.md").read_text(), "---\nname: garden\n---\nmine\n"
+        )
+
+    def test_untracked_postures_exclude_the_rendered_skills(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = run_cli(
+            "install",
+            "--wiki",
+            str(wiki),
+            "--repo",
+            str(repo),
+            "--companion",
+            "widget",
+            "--posture",
+            "invisible",
+            "--skills-dir",
+            ".agents/skills",
+        )
+        self.assertEqual(code, 0)
+        exclude = (repo / ".git" / "info" / "exclude").read_text()
+        self.assertIn(".agents/skills/", exclude.splitlines())
+        self.assertEqual(self.git(repo, "status", "--porcelain"), "")
 
 
 class CompleteTest(DockCase):
