@@ -10,6 +10,7 @@ running complete makes resolution succeed.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
@@ -421,18 +422,94 @@ class SkillRenderTest(DockCase):
         self.assertEqual(code, 0)
         self.assertIn("skill 'garden' up to date", out)
 
-    def test_changed_kit_render_updates_on_reinstall(self) -> None:
+    def test_hand_edited_render_survives_reinstall_untouched(self) -> None:
+        """Digest-based provenance: a render the consumer edited is no
+        longer a pristine kit render, so reinstall leaves it alone."""
         wiki = self.make_wiki()
         repo = self.init_repo(self.base / "consumer")
         self.install_with_skills(repo, wiki, "--skills-dir", ".agents/skills")
         dest = repo / ".agents" / "skills" / "garden" / "SKILL.md"
-        dest.write_text(dest.read_text() + "\nstale line\n")
+        edited = dest.read_text() + "\nconsumer note\n"
+        dest.write_text(edited)
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("left in place", out)
+        self.assertEqual(dest.read_text(), edited)
+
+    def test_pristine_older_render_updates_on_reinstall(self) -> None:
+        """A byte-pristine render of older content (its sidecar digest
+        still matches the file) is kit-owned and re-renders in place."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dest_dir = repo / ".agents" / "skills" / "garden"
+        dest_dir.mkdir(parents=True)
+        old = "---\nname: garden\n---\nold render\n"
+        (dest_dir / "SKILL.md").write_text(old)
+        digest = hashlib.sha256(old.encode("utf-8")).hexdigest()
+        (dest_dir / ".wiki-kit-sha256").write_text(digest + "\n")
         code, out = self.install_with_skills(
             repo, wiki, "--skills-dir", ".agents/skills"
         )
         self.assertEqual(code, 0)
         self.assertIn("skill 'garden' re-rendered", out)
-        self.assertNotIn("stale line", dest.read_text())
+        rendered = (dest_dir / "SKILL.md").read_text()
+        self.assertNotEqual(rendered, old)
+        self.assertIn("uv run --project", rendered)
+
+    def test_symlinked_skill_dir_is_refused_before_any_write(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        outside = self.base / "elsewhere"
+        outside.mkdir()
+        skills_link = repo / ".agents" / "skills"
+        skills_link.parent.mkdir()
+        skills_link.symlink_to(outside)
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((repo / ".wiki").exists())
+
+    def test_symlinked_skill_file_is_refused_and_untouched(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install_with_skills(repo, wiki, "--skills-dir", ".agents/skills")
+        dest = repo / ".agents" / "skills" / "garden" / "SKILL.md"
+        outside = self.base / "hostage.md"
+        outside.write_text("do not touch\n")
+        dest.unlink()
+        dest.symlink_to(outside)
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(outside.read_text(), "do not touch\n")
+
+    def test_unrenderable_template_fails_loud_in_preflight(self) -> None:
+        """A leftover placeholder in ANY case/charset (here a lowercase
+        token) is a template bug: preflight catches it before the dock
+        wiring or any skill write lands."""
+        templates = self.base / "bad-templates"
+        for name in SKILL_NAMES:
+            skill_dir = templates / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\n---\nbody\n"
+            )
+        bad = templates / "garden" / "SKILL.md"
+        bad.write_text(bad.read_text() + "run {{kit_root}}/scripts/x.py\n")
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        with mock.patch.object(wiki_dock, "SKILLS_TEMPLATE_DIR", templates):
+            code, _ = self.install_with_skills(
+                repo, wiki, "--skills-dir", ".agents/skills"
+            )
+        self.assertEqual(code, 1)
+        self.assertFalse((repo / ".wiki").exists())
+        self.assertFalse((repo / ".agents").exists())
 
     def test_foreign_same_name_skill_is_left_in_place(self) -> None:
         wiki = self.make_wiki()

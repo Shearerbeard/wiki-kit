@@ -21,6 +21,7 @@ consumer-side docks:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shlex
@@ -69,8 +70,13 @@ PLUGIN_MARKER = "OpenCode session.idle handoff plugin"
 # deployment overlay's [tools].kit and lands each contracted skill in the
 # consumer-chosen target directories.
 SKILLS_TEMPLATE_DIR = KIT_ROOT / ".agents" / "skills"
-SKILL_MARKER = "Rendered from the wiki-kit template"
-SKILL_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+# Any {{...}} span is a placeholder: a token in an unexpected case or
+# charset is a template bug and must fail loud, never survive rendering.
+SKILL_PLACEHOLDER_RE = re.compile(r"\{\{[^}]*\}\}")
+# Sidecar beside each rendered SKILL.md: the sha256 of the last content
+# the kit wrote. Provenance is digest-based, not marker-based, so a
+# hand-edited render is treated as foreign and never silently rewritten.
+SKILL_DIGEST_NAME = ".wiki-kit-sha256"
 
 POST_COMMIT_MARKER = "# wiki-kit post-commit wrapper"
 
@@ -309,26 +315,21 @@ def resolve_skill_targets(repo: Path, raw_targets: list[str]) -> list[Path]:
     return targets
 
 
-def check_skill_templates(skills: tuple[str, ...]) -> None:
-    """Preflight: every contracted skill must ship a template, so a failed
-    install never leaves the render half-applied."""
-    for name in skills:
-        path = SKILLS_TEMPLATE_DIR / name / "SKILL.md"
-        if not path.is_file():
-            raise DockError(
-                f"wiki.toml [contract].skills lists {name!r} but the kit "
-                f"ships no template at {path}"
-            )
-
-
-def render_skills(
-    skills: tuple[str, ...], targets: list[Path], kit_root: str
-) -> None:
-    """Render each contracted skill into every chosen target. Re-render
-    follows the handoff-plugin rule: a kit render updates in place, a
-    foreign same-name skill is left alone."""
+def prepare_skill_renders(
+    skills: tuple[str, ...], kit_root: str
+) -> dict[str, str]:
+    """Preflight: read and FULLY render every contracted skill template
+    before any dock wiring or skill write happens, so a template bug
+    (missing file, leftover placeholder in any case or charset) fails
+    loud with nothing half-applied."""
+    rendered: dict[str, str] = {}
     for name in skills:
         template_path = SKILLS_TEMPLATE_DIR / name / "SKILL.md"
+        if not template_path.is_file():
+            raise DockError(
+                f"wiki.toml [contract].skills lists {name!r} but the kit "
+                f"ships no template at {template_path}"
+            )
         content = template_path.read_text(encoding="utf-8").replace(
             "{{KIT_ROOT}}", kit_root
         )
@@ -337,24 +338,84 @@ def render_skills(
             raise DockError(
                 f"{template_path} has unrendered placeholders: {leftover}"
             )
+        rendered[name] = content
+    return rendered
+
+
+def check_skill_paths(
+    repo: Path, skills: tuple[str, ...], targets: list[Path]
+) -> None:
+    """Preflight the write set against the repo boundary: a symlinked
+    skill directory or SKILL.md must not smuggle a render outside the
+    consumer repo."""
+    for target in targets:
+        for name in skills:
+            _require_within_repo(repo, target / name / "SKILL.md")
+
+
+def _require_within_repo(repo: Path, path: Path) -> None:
+    """Resolve through the deepest existing ancestor (symlinks included)
+    and refuse anything that lands outside the consumer repo root."""
+    existing = path
+    while not existing.exists() and not existing.is_symlink():
+        parent = existing.parent
+        if parent == existing:
+            raise DockError(f"cannot resolve {path} within {repo}")
+        existing = parent
+    resolved = existing.resolve()
+    if resolved != repo and repo not in resolved.parents:
+        raise DockError(
+            f"skill render path {path} resolves to {resolved}, outside "
+            f"the consumer repo {repo}; refusing to write across the "
+            "repo boundary"
+        )
+
+
+def _is_pristine_render(dest: Path, sidecar: Path) -> bool:
+    """True only when the on-disk SKILL.md is byte-identical to what the
+    kit last wrote there (the sidecar's digest). A hand edit breaks the
+    match and makes the file foreign."""
+    if not sidecar.is_file():
+        return False
+    recorded = sidecar.read_text(encoding="utf-8").strip()
+    return hashlib.sha256(dest.read_bytes()).hexdigest() == recorded
+
+
+def render_skills(rendered: dict[str, str], targets: list[Path]) -> None:
+    """Write the prepared renders into every chosen target. Byte-identical
+    is "up to date"; a pristine older kit render (digest match) updates
+    in place; anything else - foreign file or hand-edited render - is
+    left alone, never silently rewritten."""
+    for name, content in rendered.items():
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         for target in targets:
             dest = target / name / "SKILL.md"
+            sidecar = dest.with_name(SKILL_DIGEST_NAME)
             if dest.exists():
-                current = dest.read_text(encoding="utf-8")
-                if current == content:
+                if dest.read_text(encoding="utf-8") == content:
+                    if (
+                        not sidecar.is_file()
+                        or sidecar.read_text(encoding="utf-8").strip()
+                        != digest
+                    ):
+                        # Render predates the sidecar scheme: adopt it.
+                        sidecar.write_text(digest + "\n", encoding="utf-8")
                     note(f"✓ skill {name!r} up to date at {dest}")
                     continue
-                if SKILL_MARKER not in current:
+                if not _is_pristine_render(dest, sidecar):
                     note(
-                        f"✓ skill {name!r} exists at {dest} and is not a "
-                        "kit render, left in place"
+                        f"✓ skill {name!r} at {dest} is not a pristine "
+                        "kit render (foreign or hand-edited), left in "
+                        "place"
                     )
                     continue
                 dest.write_text(content, encoding="utf-8")
+                sidecar.write_text(digest + "\n", encoding="utf-8")
                 note(f"✓ skill {name!r} re-rendered at {dest}")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content, encoding="utf-8")
+            sidecar.write_text(digest + "\n", encoding="utf-8")
             note(f"✓ skill {name!r} rendered at {dest}")
 
 
@@ -391,12 +452,19 @@ def cmd_install(args: argparse.Namespace) -> int:
     skill_targets = resolve_skill_targets(repo, args.skills_dir or [])
 
     # Every conflict check runs before any write: a failed install
-    # leaves nothing half-applied.
+    # leaves nothing half-applied. Skill preflight renders every template
+    # completely and proves every write path stays inside the repo.
     _check_manifest_slot(dock_dir, config.name, companion.name)
     if wired:
         _check_hook_slot(hooks / "post-commit")
+    skill_renders: dict[str, str] = {}
     if skill_targets:
-        check_skill_templates(config.contract.skills)
+        # {{KIT_ROOT}} renders from the deployment overlay's [tools].kit;
+        # absent one, the kit performing this dock is the kit on record.
+        skill_renders = prepare_skill_renders(
+            config.contract.skills, config.tool("kit", str(KIT_ROOT))
+        )
+        check_skill_paths(repo, config.contract.skills, skill_targets)
 
     write_manifest(dock_dir, config.name, companion.name)
     write_overlay(dock_dir, wiki_root)
@@ -417,13 +485,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "opencode plugin skipped"
         )
     if skill_targets:
-        # {{KIT_ROOT}} renders from the deployment overlay's [tools].kit;
-        # absent one, the kit performing this dock is the kit on record.
-        render_skills(
-            config.contract.skills,
-            skill_targets,
-            config.tool("kit", str(KIT_ROOT)),
-        )
+        render_skills(skill_renders, skill_targets)
 
     dock = load_dock(dock_dir)
     verify_dock_identity(dock, wiki_root)

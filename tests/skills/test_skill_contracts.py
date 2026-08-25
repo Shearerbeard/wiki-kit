@@ -19,7 +19,9 @@ SKILLS_DIR = KIT_ROOT / ".agents" / "skills"
 
 SKILL_NAMES = ("garden", "handoff", "morning", "session-feedback")
 HARNESSES = "pi opencode claude-code codex"
-TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+# Any {{...}} span is a template placeholder; matching the dock's own
+# leftover check, no case/charset restriction.
+TOKEN_RE = re.compile(r"\{\{[^}]*\}\}")
 
 # Machine-specific strings the ported text must never carry. The family
 # string is assembled, never spelled out: the zero-family sweep
