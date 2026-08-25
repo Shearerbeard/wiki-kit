@@ -51,13 +51,24 @@ from wiki_config import (  # noqa: E402
 KIT_SCRIPTS = KIT_ROOT / "scripts"
 HANDOFF_PLUGIN_TEMPLATE = KIT_ROOT / "templates" / "handoff.ts.template"
 
+# Rendered-skill provenance: the kit-owned record of what it wrote at
+# each skill path (sha256), kept INSIDE the dock - not beside the skill,
+# where it was both an unchecked write path and forgeable by the same
+# actor editing the skill. The rendered content embeds the machine-local
+# [tools].kit path, so this record is machine-local like the overlay.
+RENDERED_SKILLS_FILE = "rendered-skills.json"
+
 # The ignore lines each posture applies: committed tracks the manifest
-# and ignores only the overlay; gitignored and invisible ignore the
-# whole dock (tracked .gitignore vs the per-clone exclude file).
-# Generated wiring joins these lines for the untracked postures - the
-# spec's exclusion set covers everything the install step writes.
+# and ignores only the machine-local files (overlay, skill provenance);
+# gitignored and invisible ignore the whole dock (tracked .gitignore vs
+# the per-clone exclude file). Generated wiring joins these lines for
+# the untracked postures - the spec's exclusion set covers everything
+# the install step writes.
 IGNORE_LINES = {
-    "committed": (f"{DOCK_DIR_NAME}/{DOCK_OVERLAY_NAME}",),
+    "committed": (
+        f"{DOCK_DIR_NAME}/{DOCK_OVERLAY_NAME}",
+        f"{DOCK_DIR_NAME}/{RENDERED_SKILLS_FILE}",
+    ),
     "gitignored": (f"{DOCK_DIR_NAME}/",),
     "invisible": (f"{DOCK_DIR_NAME}/",),
 }
@@ -73,10 +84,11 @@ SKILLS_TEMPLATE_DIR = KIT_ROOT / ".agents" / "skills"
 # Any {{...}} span is a placeholder: a token in an unexpected case or
 # charset is a template bug and must fail loud, never survive rendering.
 SKILL_PLACEHOLDER_RE = re.compile(r"\{\{[^}]*\}\}")
-# Sidecar beside each rendered SKILL.md: the sha256 of the last content
-# the kit wrote. Provenance is digest-based, not marker-based, so a
-# hand-edited render is treated as foreign and never silently rewritten.
-SKILL_DIGEST_NAME = ".wiki-kit-sha256"
+# Every kit-rendered skill carries this comment in its frontmatter. It
+# is not proof of provenance (the dock's rendered-skills.json is); it
+# only distinguishes "looks like a kit render" from a plainly foreign
+# file when the provenance record cannot vouch for the file.
+SKILL_MARKER = "Rendered from the wiki-kit template"
 
 POST_COMMIT_MARKER = "# wiki-kit post-commit wrapper"
 
@@ -343,11 +355,15 @@ def prepare_skill_renders(
 
 
 def check_skill_paths(
-    repo: Path, skills: tuple[str, ...], targets: list[Path]
+    repo: Path,
+    skills: tuple[str, ...],
+    targets: list[Path],
+    manifest_path: Path,
 ) -> None:
     """Preflight the write set against the repo boundary: a symlinked
-    skill directory or SKILL.md must not smuggle a render outside the
-    consumer repo."""
+    skill directory, SKILL.md, or provenance manifest must not smuggle a
+    write outside the consumer repo."""
+    _require_within_repo(repo, manifest_path)
     for target in targets:
         for name in skills:
             _require_within_repo(repo, target / name / "SKILL.md")
@@ -371,52 +387,111 @@ def _require_within_repo(repo: Path, path: Path) -> None:
         )
 
 
-def _is_pristine_render(dest: Path, sidecar: Path) -> bool:
-    """True only when the on-disk SKILL.md is byte-identical to what the
-    kit last wrote there (the sidecar's digest). A hand edit breaks the
-    match and makes the file foreign."""
-    if not sidecar.is_file():
-        return False
-    recorded = sidecar.read_text(encoding="utf-8").strip()
-    return hashlib.sha256(dest.read_bytes()).hexdigest() == recorded
+def _load_render_manifest(path: Path) -> tuple[dict[str, str], bool]:
+    """The dock's provenance record: repo-relative skill path -> sha256
+    of the content the kit wrote there. Missing is normal before the
+    first render; an unparseable or wrong-shaped file is corrupt - the
+    caller notes it loudly and treats every render as unprovenanced."""
+    if not path.exists():
+        return {}, True
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}, False
+    renders = data.get("renders") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != 1
+        or not isinstance(renders, dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in renders.items()
+        )
+    ):
+        return {}, False
+    return dict(renders), True
 
 
-def render_skills(rendered: dict[str, str], targets: list[Path]) -> None:
-    """Write the prepared renders into every chosen target. Byte-identical
-    is "up to date"; a pristine older kit render (digest match) updates
-    in place; anything else - foreign file or hand-edited render - is
-    left alone, never silently rewritten."""
+def _write_render_manifest(path: Path, entries: dict[str, str]) -> None:
+    text = (
+        json.dumps(
+            {"version": 1, "renders": entries}, indent=2, sort_keys=True
+        )
+        + "\n"
+    )
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def render_skills(
+    rendered: dict[str, str],
+    targets: list[Path],
+    repo: Path,
+    dock_dir: Path,
+) -> None:
+    """Write the prepared renders into every chosen target and record
+    each write's digest in the dock's provenance manifest. Byte-identical
+    is "up to date"; a file the manifest vouches for (digest match) is a
+    pristine older kit render and updates in place; anything else -
+    hand-edited, foreign, or unprovenanced - is left alone, never
+    silently rewritten."""
+    manifest_path = dock_dir / RENDERED_SKILLS_FILE
+    entries, healthy = _load_render_manifest(manifest_path)
+    if not healthy:
+        note(
+            f"! {manifest_path} is corrupt; no render can be verified "
+            "against it. Every existing skill file is left in place "
+            "until it verifies or is removed"
+        )
+    updated = dict(entries)
     for name, content in rendered.items():
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_bytes = content.encode("utf-8")
+        digest = hashlib.sha256(content_bytes).hexdigest()
         for target in targets:
             dest = target / name / "SKILL.md"
-            sidecar = dest.with_name(SKILL_DIGEST_NAME)
+            rel = dest.relative_to(repo).as_posix()
             if dest.exists():
-                if dest.read_text(encoding="utf-8") == content:
-                    if (
-                        not sidecar.is_file()
-                        or sidecar.read_text(encoding="utf-8").strip()
-                        != digest
-                    ):
-                        # Render predates the sidecar scheme: adopt it.
-                        sidecar.write_text(digest + "\n", encoding="utf-8")
+                current = dest.read_bytes()
+                if current == content_bytes:
+                    updated[rel] = digest
                     note(f"✓ skill {name!r} up to date at {dest}")
                     continue
-                if not _is_pristine_render(dest, sidecar):
+                recorded = entries.get(rel)
+                if recorded is not None and recorded == hashlib.sha256(
+                    current
+                ).hexdigest():
+                    dest.write_bytes(content_bytes)
+                    updated[rel] = digest
+                    note(f"✓ skill {name!r} re-rendered at {dest}")
+                    continue
+                if recorded is not None:
                     note(
-                        f"✓ skill {name!r} at {dest} is not a pristine "
-                        "kit render (foreign or hand-edited), left in "
-                        "place"
+                        f"✓ skill {name!r} at {dest} was modified after "
+                        "the kit render, left in place"
                     )
                     continue
-                dest.write_text(content, encoding="utf-8")
-                sidecar.write_text(digest + "\n", encoding="utf-8")
-                note(f"✓ skill {name!r} re-rendered at {dest}")
+                if SKILL_MARKER.encode() in current:
+                    note(
+                        f"! skill {name!r} at {dest} looks like a kit "
+                        "render but has no provenance entry in "
+                        f"{DOCK_DIR_NAME}/{RENDERED_SKILLS_FILE}; left "
+                        "in place. Recovery: keep it as a consumer file "
+                        "(no action), or delete it and rerun wiki-dock "
+                        "install to adopt the kit render"
+                    )
+                    continue
+                note(
+                    f"✓ skill {name!r} at {dest} is a foreign file, "
+                    "left in place"
+                )
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-            sidecar.write_text(digest + "\n", encoding="utf-8")
+            dest.write_bytes(content_bytes)
+            updated[rel] = digest
             note(f"✓ skill {name!r} rendered at {dest}")
+    _write_render_manifest(manifest_path, updated)
 
 
 def _resolve_posture(flag: str | None, companion: Companion) -> str:
@@ -464,7 +539,12 @@ def cmd_install(args: argparse.Namespace) -> int:
         skill_renders = prepare_skill_renders(
             config.contract.skills, config.tool("kit", str(KIT_ROOT))
         )
-        check_skill_paths(repo, config.contract.skills, skill_targets)
+        check_skill_paths(
+            repo,
+            config.contract.skills,
+            skill_targets,
+            dock_dir / RENDERED_SKILLS_FILE,
+        )
 
     write_manifest(dock_dir, config.name, companion.name)
     write_overlay(dock_dir, wiki_root)
@@ -485,7 +565,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "opencode plugin skipped"
         )
     if skill_targets:
-        render_skills(skill_renders, skill_targets)
+        render_skills(skill_renders, skill_targets, repo, dock_dir)
 
     dock = load_dock(dock_dir)
     verify_dock_identity(dock, wiki_root)

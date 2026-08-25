@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -134,6 +135,7 @@ class InstallTest(DockCase):
         self.assertIn(f'path = "{wiki}"', overlay)
         gitignore = (repo / ".gitignore").read_text()
         self.assertIn(".wiki/local.toml", gitignore.splitlines())
+        self.assertIn(".wiki/rendered-skills.json", gitignore.splitlines())
 
         hook = repo / ".git" / "hooks" / "post-commit"
         text = hook.read_text()
@@ -439,8 +441,8 @@ class SkillRenderTest(DockCase):
         self.assertEqual(dest.read_text(), edited)
 
     def test_pristine_older_render_updates_on_reinstall(self) -> None:
-        """A byte-pristine render of older content (its sidecar digest
-        still matches the file) is kit-owned and re-renders in place."""
+        """A byte-pristine render of older content (the dock's provenance
+        manifest still vouches for it) is kit-owned and re-renders."""
         wiki = self.make_wiki()
         repo = self.init_repo(self.base / "consumer")
         dest_dir = repo / ".agents" / "skills" / "garden"
@@ -448,7 +450,17 @@ class SkillRenderTest(DockCase):
         old = "---\nname: garden\n---\nold render\n"
         (dest_dir / "SKILL.md").write_text(old)
         digest = hashlib.sha256(old.encode("utf-8")).hexdigest()
-        (dest_dir / ".wiki-kit-sha256").write_text(digest + "\n")
+        dock = repo / ".wiki"
+        dock.mkdir()
+        (dock / "rendered-skills.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "renders": {".agents/skills/garden/SKILL.md": digest},
+                }
+            )
+            + "\n"
+        )
         code, out = self.install_with_skills(
             repo, wiki, "--skills-dir", ".agents/skills"
         )
@@ -457,6 +469,62 @@ class SkillRenderTest(DockCase):
         rendered = (dest_dir / "SKILL.md").read_text()
         self.assertNotEqual(rendered, old)
         self.assertIn("uv run --project", rendered)
+
+    def test_fabricated_provenance_artifact_is_never_trusted(self) -> None:
+        """Provenance lives only in the dock's rendered-skills.json. A
+        foreign file carrying a fabricated consumer-side digest (the
+        retired sidecar scheme) has no manifest entry and is never
+        overwritten."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dest_dir = repo / ".agents" / "skills" / "garden"
+        dest_dir.mkdir(parents=True)
+        foreign = (
+            "---\nname: garden\n# Rendered from the wiki-kit template\n"
+            "---\nforged content\n"
+        )
+        (dest_dir / "SKILL.md").write_text(foreign)
+        forged = hashlib.sha256(foreign.encode("utf-8")).hexdigest()
+        (dest_dir / ".wiki-kit-sha256").write_text(forged + "\n")
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("no provenance entry", out)
+        self.assertIn("left in place", out)
+        self.assertEqual((dest_dir / "SKILL.md").read_text(), foreign)
+
+    def test_missing_manifest_entry_on_older_render_is_loud(self) -> None:
+        """A rendered-looking skill with no valid manifest entry gets a
+        prominent note naming the recovery path, and is left in place."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install_with_skills(repo, wiki, "--skills-dir", ".agents/skills")
+        (repo / ".wiki" / "rendered-skills.json").unlink()
+        dest = repo / ".agents" / "skills" / "garden" / "SKILL.md"
+        dest.write_text(dest.read_text() + "\nolder state\n")
+        code, out = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("no provenance entry", out)
+        self.assertIn("rerun wiki-dock install", out)
+        self.assertIn("older state", dest.read_text())
+
+    def test_symlinked_provenance_manifest_is_refused(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dock = repo / ".wiki"
+        dock.mkdir()
+        outside = self.base / "hostage.json"
+        outside.write_text("{}\n")
+        (dock / "rendered-skills.json").symlink_to(outside)
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(outside.read_text(), "{}\n")
+        self.assertFalse((repo / ".agents").exists())
 
     def test_symlinked_skill_dir_is_refused_before_any_write(self) -> None:
         wiki = self.make_wiki()
