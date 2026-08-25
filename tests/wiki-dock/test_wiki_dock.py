@@ -594,6 +594,13 @@ class SkillRenderTest(DockCase):
             (dest / "SKILL.md").read_text(), "---\nname: garden\n---\nmine\n"
         )
 
+    def ignored(self, repo: Path, path: str) -> bool:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", path],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
     def test_untracked_postures_exclude_the_rendered_skills(self) -> None:
         wiki = self.make_wiki()
         repo = self.init_repo(self.base / "consumer")
@@ -614,6 +621,69 @@ class SkillRenderTest(DockCase):
         exclude = (repo / ".git" / "info" / "exclude").read_text()
         self.assertIn(".agents/skills/", exclude.splitlines())
         self.assertEqual(self.git(repo, "status", "--porcelain"), "")
+
+    def test_committed_posture_excludes_the_rendered_skills(self) -> None:
+        """Rendered skills are generated wiring in EVERY posture: they
+        embed the machine-local kit path, so committed posture excludes
+        them and tracks only the dock manifest."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        gitignore = (repo / ".gitignore").read_text().splitlines()
+        self.assertIn(".agents/skills/", gitignore)
+        self.assertTrue(self.ignored(repo, ".agents/skills/garden/SKILL.md"))
+        self.assertTrue(self.ignored(repo, ".wiki/rendered-skills.json"))
+        self.assertTrue(self.ignored(repo, ".wiki/local.toml"))
+        self.assertFalse(self.ignored(repo, ".wiki/manifest.toml"))
+
+    def test_fresh_clone_rerenders_skills_without_stale_refusal(
+        self,
+    ) -> None:
+        """The second-clone flow: a committed-posture clone carries the
+        tracked dock manifest but neither the renders nor the provenance
+        manifest; install re-renders per clone with no stale-file
+        refusal."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install_with_skills(
+            repo, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.git(repo, "add", "-A")
+        self.git(
+            repo,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "dock",
+        )
+        tracked = self.git(repo, "ls-files")
+        self.assertIn(".wiki/manifest.toml", tracked)
+        self.assertNotIn(".agents", tracked)
+        self.assertNotIn("rendered-skills.json", tracked)
+
+        clone = self.base / "clone"
+        self.git(self.base, "clone", str(repo), str(clone))
+        self.assertFalse((clone / ".agents").exists())
+        self.assertFalse((clone / ".wiki" / "rendered-skills.json").exists())
+        code, out = self.install_with_skills(
+            clone, wiki, "--skills-dir", ".agents/skills"
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("no provenance entry", out)
+        self.assertIn("skill 'garden' rendered", out)
+        rendered = (
+            clone / ".agents" / "skills" / "garden" / "SKILL.md"
+        ).read_text()
+        self.assertIn("uv run --project", rendered)
+        self.assertTrue((clone / ".wiki" / "rendered-skills.json").exists())
+        self.assertEqual(self.git(clone, "status", "--porcelain"), "")
 
 
 class CompleteTest(DockCase):

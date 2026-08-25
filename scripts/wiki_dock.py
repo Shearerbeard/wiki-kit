@@ -61,9 +61,9 @@ RENDERED_SKILLS_FILE = "rendered-skills.json"
 # The ignore lines each posture applies: committed tracks the manifest
 # and ignores only the machine-local files (overlay, skill provenance);
 # gitignored and invisible ignore the whole dock (tracked .gitignore vs
-# the per-clone exclude file). Generated wiring joins these lines for
-# the untracked postures - the spec's exclusion set covers everything
-# the install step writes.
+# the per-clone exclude file). Generated wiring joins these lines: the
+# handoff plugin for the untracked postures, the rendered skill dirs for
+# every posture (they embed the machine-local kit path).
 IGNORE_LINES = {
     "committed": (
         f"{DOCK_DIR_NAME}/{DOCK_OVERLAY_NAME}",
@@ -201,11 +201,12 @@ def apply_posture(
         # Generated shims follow the posture (docking spec): tracked
         # when committed, covered by the same exclusion set otherwise.
         lines.append(PLUGIN_REPO_PATH)
-    if posture != "committed":
-        # Project-scoped skill renders are generated wiring too: the
-        # untracked postures exclude them so nothing wiki-related ever
-        # surfaces in git status.
-        lines.extend(f"{directory}/" for directory in skill_dirs)
+    # Rendered skills are generated wiring in EVERY posture: they embed
+    # the machine-local [tools].kit path, so a tracked render would put
+    # a machine path in shared history, and a fresh clone (which has no
+    # .wiki/rendered-skills.json) could never verify it. Committed
+    # posture tracks only the dock manifest itself.
+    lines.extend(f"{directory}/" for directory in skill_dirs)
     if posture == "invisible":
         path = _git_exclude_file(repo)
         label = "info/exclude"
