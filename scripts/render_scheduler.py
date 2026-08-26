@@ -78,7 +78,9 @@ UNITS = {
 }
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+# Any non-nested mustache token, not just the TOKEN shape: a mistyped
+# {{Path}} or {{ PATH }} must reach _substitute's raise, not slip through.
+PLACEHOLDER_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 
 def _escape_value(value: str, target_name: str) -> str:
@@ -93,7 +95,8 @@ def _substitute(
     text: str, values: dict[str, str], target_name: str, template_path: Path
 ) -> str:
     """One-pass token replacement: substituted text is never rescanned,
-    and an unknown template token fails loud at substitution time."""
+    and any {{...}} token that is not a rendered value fails loud at
+    substitution time."""
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(0)

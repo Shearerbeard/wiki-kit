@@ -5,6 +5,7 @@ tests/notifications/."""
 from __future__ import annotations
 
 import configparser
+import re
 import shutil
 import stat
 import subprocess
@@ -234,16 +235,20 @@ def test_missing_tool_binary_fails_loud(fixture) -> None:
     assert not out_dir.exists() or not list(out_dir.iterdir())
 
 
+@pytest.mark.parametrize(
+    "token", ["{{BOGUS}}", "{{Path}}", "{{PATH1}}", "{{ PATH }}", "{{OnCalendar}}"]
+)
 def test_unknown_template_token_fails_loud_at_substitution(
-    fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token: str
 ) -> None:
-    """A {{TOKEN}} in a template that is not a rendered value raises at
-    substitution time, naming the template path and the token."""
+    """Any {{...}} token in a template that is not a rendered value
+    raises at substitution time, naming the template path and the token
+    - including shapes the old [A-Z_]+ pattern would have missed."""
     wiki, _out_dir, _tools = fixture
     broken_dir = tmp_path / "broken-templates"
     shutil.copytree(SYSTEMD_TEMPLATES, broken_dir)
     timer = broken_dir / "night-shift.timer.template"
-    timer.write_text(timer.read_text() + "{{BOGUS}}\n")
+    timer.write_text(timer.read_text() + token + "\n")
     target = render_scheduler.TARGETS["systemd"]
     monkeypatch.setitem(
         render_scheduler.TARGETS,
@@ -252,7 +257,7 @@ def test_unknown_template_token_fails_loud_at_substitution(
     )
 
     config = wiki_config.load_config(wiki)
-    with pytest.raises(wiki_config.ConfigError, match="BOGUS") as excinfo:
+    with pytest.raises(wiki_config.ConfigError, match=re.escape(token)) as excinfo:
         render_scheduler.render_units(config, "systemd")
     assert "night-shift.timer.template" in str(excinfo.value)
 
