@@ -464,6 +464,8 @@ def test_morning_launchagent_passes_night_conventions_from_config(
             str(wiki),
             "--out",
             str(out_dir),
+            "--target",
+            "launchd",
         ],
         capture_output=True,
         check=False,

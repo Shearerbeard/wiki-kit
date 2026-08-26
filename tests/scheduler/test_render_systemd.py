@@ -234,9 +234,11 @@ def test_missing_tool_binary_fails_loud(fixture) -> None:
     assert not out_dir.exists() or not list(out_dir.iterdir())
 
 
-def test_leftover_placeholder_guard_fires_on_a_broken_template(
+def test_unknown_template_token_fails_loud_at_substitution(
     fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A {{TOKEN}} in a template that is not a rendered value raises at
+    substitution time, naming the template path and the token."""
     wiki, _out_dir, _tools = fixture
     broken_dir = tmp_path / "broken-templates"
     shutil.copytree(SYSTEMD_TEMPLATES, broken_dir)
@@ -250,8 +252,9 @@ def test_leftover_placeholder_guard_fires_on_a_broken_template(
     )
 
     config = wiki_config.load_config(wiki)
-    with pytest.raises(wiki_config.ConfigError, match="BOGUS"):
+    with pytest.raises(wiki_config.ConfigError, match="BOGUS") as excinfo:
         render_scheduler.render_units(config, "systemd")
+    assert "night-shift.timer.template" in str(excinfo.value)
 
 
 def test_percent_escapes_per_target(fixture, tmp_path: Path) -> None:
@@ -372,22 +375,38 @@ def test_quote_in_config_value_fails_systemd_but_not_launchd(
     assert 'night"' in plist
 
 
-def test_token_text_inside_a_value_renders_literally(fixture, tmp_path: Path) -> None:
-    """Single-pass substitution: a config value holding the literal text
-    of another token is data - it renders as-is and is never rescanned,
-    while genuine template tokens still render."""
-    wiki, _out_dir, tools = fixture
+def test_template_braces_in_wiki_name_fail_loud(fixture, tmp_path: Path) -> None:
+    """[wiki].name becomes unit labels and unit file names, so template
+    braces in it are rejected at render time, not rendered."""
+    wiki, _out_dir, _tools = fixture
     text = (wiki / "wiki.toml").read_text()
     (wiki / "wiki.toml").write_text(
         text.replace('name = "acme-notes"', "name = 'x{{PATH}}'")
+    )
+
+    result = run_renderer(wiki, tmp_path / "units", "--target", "launchd")
+
+    assert result.returncode == 1
+    assert "[wiki].name" in result.stderr
+    assert "{{" in result.stderr
+
+
+def test_token_text_inside_a_value_renders_literally(fixture, tmp_path: Path) -> None:
+    """Single-pass substitution: a non-structural config value holding
+    the literal text of another token is data - it renders as-is and is
+    never rescanned, while genuine template tokens still render."""
+    wiki, _out_dir, tools = fixture
+    text = (wiki / "wiki.toml").read_text()
+    (wiki / "wiki.toml").write_text(
+        text.replace('commit_prefix = "nightly:"', 'commit_prefix = "nightly {{PATH}}"')
     )
     out_dir = tmp_path / "units"
 
     result = run_renderer(wiki, out_dir, "--target", "launchd")
 
     assert result.returncode == 0, result.stderr
-    plist = (out_dir / "com.x{{PATH}}.wiki-night-shift.plist").read_text()
-    # The wiki name's literal {{PATH}} survived substitution...
-    assert "com.x{{PATH}}.wiki-night-shift" in plist
+    plist = (out_dir / "com.acme-notes.wiki-morning-reminder.plist").read_text()
+    # The commit prefix's literal {{PATH}} survived substitution...
+    assert "nightly {{PATH}}" in plist
     # ...while the template's genuine {{PATH}} token rendered.
     assert str(tools["uv"].parent) in plist

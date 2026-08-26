@@ -249,6 +249,8 @@ def _render_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
 
 
 def _run_renderer(wiki: Path, out_dir: Path) -> subprocess.CompletedProcess[str]:
+    # These tests assert plist content; pin the target so a Linux host
+    # (CI) does not default to rendering systemd units instead.
     return subprocess.run(
         [
             sys.executable,
@@ -257,6 +259,8 @@ def _run_renderer(wiki: Path, out_dir: Path) -> subprocess.CompletedProcess[str]
             str(wiki),
             "--out",
             str(out_dir),
+            "--target",
+            "launchd",
         ],
         capture_output=True,
         check=False,

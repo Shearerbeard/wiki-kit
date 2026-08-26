@@ -89,15 +89,17 @@ def _escape_value(value: str, target_name: str) -> str:
     return escape(value)
 
 
-def _substitute(text: str, values: dict[str, str], target_name: str) -> str:
+def _substitute(
+    text: str, values: dict[str, str], target_name: str, template_path: Path
+) -> str:
     """One-pass token replacement: substituted text is never rescanned,
-    and unknown tokens pass through for the leftover guard to catch."""
+    and an unknown template token fails loud at substitution time."""
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(0)
         value = values.get(token[2:-2])
         if value is None:
-            return token
+            raise ConfigError(f"{template_path} has unknown placeholder {token}")
         return _escape_value(value, target_name)
 
     return PLACEHOLDER_RE.sub(replace, text)
@@ -176,6 +178,12 @@ def render_units(config: WikiConfig, target_name: str) -> list[tuple[str, str]]:
         "morning": config.schedule.morning,
         "garden_reminder": config.schedule.garden_reminder,
     }
+    if "{{" in config.name or "}}" in config.name:
+        raise ConfigError(
+            f"[wiki].name {config.name!r} contains template braces; the "
+            "name becomes unit labels and unit file names, so it must "
+            "not carry {{...}} syntax"
+        )
     rendered: list[tuple[str, str]] = []
     for stem, schedule_key in UNITS.items():
         hour, minute = _parse_time(schedule_times[schedule_key], schedule_key)
@@ -205,23 +213,14 @@ def render_units(config: WikiConfig, target_name: str) -> list[tuple[str, str]]:
                         f"would break out of the systemd unit's quoting: "
                         f"{value!r}"
                     )
-        # Placeholder text inside a value is data, not an unrendered
-        # template token (e.g. a wiki name holding literal {{PATH}}).
-        literal = {
-            token
-            for value in values.values()
-            for token in PLACEHOLDER_RE.findall(value)
-        }
         for suffix in target.suffixes:
             template_path = target.template_dir / f"{stem}.{suffix}.template"
             text = _substitute(
-                template_path.read_text(encoding="utf-8"), values, target_name
+                template_path.read_text(encoding="utf-8"),
+                values,
+                target_name,
+                template_path,
             )
-            leftover = sorted(set(PLACEHOLDER_RE.findall(text)) - literal)
-            if leftover:
-                raise ConfigError(
-                    f"{template_path} has unrendered placeholders: {leftover}"
-                )
             rendered.append((f"{label}.{suffix}", text))
     return rendered
 
