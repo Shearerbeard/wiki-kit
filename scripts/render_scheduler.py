@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Render per-machine launchd units from the kit's scheduler templates.
+"""Render per-machine scheduler units from the kit's templates.
 
-launchd cannot expand $HOME or read environment variables, so the three
-scheduler units cannot ship as static files: every path must land fully
-rendered, per machine. This CLI renders
-`templates/launchd/*.plist.template` against a deployment's wiki.toml:
-unit labels derive from `[wiki].name` (`com.<name>.wiki-*`), run times
-from `[schedule]`, tool binaries from the `[tools]` overlay (falling
-back to PATH lookup, failing loud when a binary resolves nowhere), and
-unit logs land in `<root>/reports/scheduler-logs`.
+Schedulers cannot expand $HOME or read environment variables, so the
+three scheduler units cannot ship as static files: every path must land
+fully rendered, per machine. This CLI renders the templates for one
+target (launchd from `templates/launchd/`, systemd user timers from
+`templates/systemd/`) against a deployment's wiki.toml: unit labels
+derive from `[wiki].name` (`com.<name>.wiki-*`), run times from
+`[schedule]`, tool binaries from the `[tools]` overlay (falling back to
+PATH lookup, failing loud when a binary resolves nowhere), and unit logs
+land in `<root>/reports/scheduler-logs`.
 
-It only renders and writes; it never loads a unit. The launchctl
-commands to load the rendered files are printed after a render. Writing
-is idempotent: a file whose content already matches is left untouched.
+It only renders and writes; it never loads a unit. The load commands
+(launchctl or systemctl --user) are printed after a render. Writing is
+idempotent: a file whose content already matches is left untouched.
 
-The default --out (~/Library/LaunchAgents) is the only macOS-specific
-part; any platform can render to an explicit --out.
+--target defaults to the host's scheduler (launchd on macOS, systemd on
+Linux). The default --out (~/Library/LaunchAgents or
+~/.config/systemd/user) only applies where that target is the host
+scheduler; any platform can render any target to an explicit --out.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import NamedTuple
 from xml.sax.saxutils import escape
 
 from wiki_config import (
@@ -35,18 +39,61 @@ from wiki_config import (
     resolve_wiki_root,
 )
 
-TEMPLATE_DIR = KIT_ROOT / "templates" / "launchd"
 
-# Unit stem -> (template file, [schedule] key). The label is
-# com.<[wiki].name>.wiki-<stem>; the rendered file is <label>.plist.
+class Target(NamedTuple):
+    template_dir: Path
+    # Unit file suffixes rendered per job, in write order.
+    suffixes: tuple[str, ...]
+    default_out: Path
+    # sys.platform value where the default --out applies.
+    host_platform: str
+    notifier_default: str
+
+
+TARGETS = {
+    "launchd": Target(
+        template_dir=KIT_ROOT / "templates" / "launchd",
+        suffixes=("plist",),
+        default_out=Path.home() / "Library" / "LaunchAgents",
+        host_platform="darwin",
+        notifier_default="terminal-notifier",
+    ),
+    "systemd": Target(
+        template_dir=KIT_ROOT / "templates" / "systemd",
+        suffixes=("service", "timer"),
+        default_out=Path.home() / ".config" / "systemd" / "user",
+        host_platform="linux",
+        notifier_default="notify-send",
+    ),
+}
+
+# Unit stem -> [schedule] key. The label is com.<[wiki].name>.wiki-<stem>;
+# the rendered files are <label>.<suffix> for each of the target's suffixes.
 UNITS = {
-    "night-shift": ("night-shift.plist.template", "night"),
-    "morning-reminder": ("morning-reminder.plist.template", "morning"),
-    "garden-reminder": ("garden-reminder.plist.template", "garden_reminder"),
+    "night-shift": "night",
+    "morning-reminder": "morning",
+    "garden-reminder": "garden_reminder",
 }
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+
+
+def _escape_value(value: str, target_name: str) -> str:
+    # systemd expands % specifiers in unit files, so a literal % doubles;
+    # launchd plists are XML.
+    if target_name == "systemd":
+        return value.replace("%", "%%")
+    return escape(value)
+
+
+def _scheduler_hint(target_name: str, label_prefix: str) -> str:
+    """One hint for all of a wiki's units: list its scheduler entries
+    (com.<name>.wiki covers com.<name>.wiki-* as a grep substring; the
+    systemd glob needs the dash)."""
+    if target_name == "systemd":
+        return f"systemctl --user list-timers '{label_prefix}-*'"
+    return f"launchctl list | grep {label_prefix}"
 
 
 def _parse_time(value: str, key: str) -> tuple[int, int]:
@@ -70,7 +117,7 @@ def _resolve_tool(config: WikiConfig, name: str, default: str) -> str:
     return str(Path(resolved).absolute())
 
 
-def _launchd_path(tools: dict[str, str]) -> str:
+def _unit_path(tools: dict[str, str]) -> str:
     """A PATH for the unit environment: the resolved tools' directories
     first (so helpers the tools spawn resolve consistently), then the
     standard system directories."""
@@ -85,22 +132,34 @@ def _launchd_path(tools: dict[str, str]) -> str:
     return ":".join(directories)
 
 
-def render_units(config: WikiConfig) -> list[tuple[str, str]]:
-    """Render all three units; returns (file name, content) pairs."""
+def render_units(config: WikiConfig, target_name: str) -> list[tuple[str, str]]:
+    """Render all units for the target; returns (file name, content) pairs."""
+    target = TARGETS[target_name]
     tools = {
         "uv": _resolve_tool(config, "uv", "uv"),
-        "notifier": _resolve_tool(config, "notifier", "terminal-notifier"),
+        "notifier": _resolve_tool(config, "notifier", target.notifier_default),
         "git": _resolve_tool(config, "git", "git"),
     }
     log_dir = config.root / "reports" / "scheduler-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    if target_name == "systemd" and any(char.isspace() for char in str(config.root)):
+        # systemd unquotes ExecStart= but not WorkingDirectory= or the
+        # append: path of StandardOutput=/StandardError=; a spaced wiki
+        # root renders but may not run.
+        print(
+            f"warning: wiki root {config.root} contains whitespace; the "
+            "rendered systemd units' WorkingDirectory= and "
+            "StandardOutput=/StandardError= append: paths do not "
+            "tolerate spaces (only ExecStart= is quoted)",
+            file=sys.stderr,
+        )
     schedule_times = {
         "night": config.schedule.night,
         "morning": config.schedule.morning,
         "garden_reminder": config.schedule.garden_reminder,
     }
     rendered: list[tuple[str, str]] = []
-    for stem, (template_name, schedule_key) in UNITS.items():
+    for stem, schedule_key in UNITS.items():
         hour, minute = _parse_time(schedule_times[schedule_key], schedule_key)
         label = f"com.{config.name}.wiki-{stem}"
         values = {
@@ -113,21 +172,26 @@ def render_units(config: WikiConfig) -> list[tuple[str, str]]:
             "GIT_BIN": tools["git"],
             "HOUR": str(hour),
             "MINUTE": str(minute),
+            "ONCALENDAR": f"*-*-* {hour:02d}:{minute:02d}:00",
             "LOG_DIR": str(log_dir),
-            "PATH": _launchd_path(tools),
+            "PATH": _unit_path(tools),
             "NIGHT_REPORT_DIR": config.night.report_dir,
             "NIGHT_COMMIT_PREFIX": config.night.commit_prefix,
+            "SCHEDULER_HINT": _scheduler_hint(target_name, f"com.{config.name}.wiki"),
         }
-        template_path = TEMPLATE_DIR / template_name
-        text = template_path.read_text(encoding="utf-8")
-        for key, value in values.items():
-            text = text.replace("{{" + key + "}}", escape(value))
-        leftover = sorted(set(PLACEHOLDER_RE.findall(text)))
-        if leftover:
-            raise ConfigError(
-                f"{template_path} has unrendered placeholders: {leftover}"
-            )
-        rendered.append((f"{label}.plist", text))
+        for suffix in target.suffixes:
+            template_path = target.template_dir / f"{stem}.{suffix}.template"
+            text = template_path.read_text(encoding="utf-8")
+            for key, value in values.items():
+                text = text.replace(
+                    "{{" + key + "}}", _escape_value(value, target_name)
+                )
+            leftover = sorted(set(PLACEHOLDER_RE.findall(text)))
+            if leftover:
+                raise ConfigError(
+                    f"{template_path} has unrendered placeholders: {leftover}"
+                )
+            rendered.append((f"{label}.{suffix}", text))
     return rendered
 
 
@@ -146,22 +210,42 @@ def main(argv: list[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="output directory (default: ~/Library/LaunchAgents, macOS only)",
+        help="output directory (default: the target's per-user unit dir, "
+        "on its host platform only)",
+    )
+    parser.add_argument(
+        "--target",
+        choices=sorted(TARGETS),
+        default=None,
+        help="scheduler platform (default: launchd on macOS, systemd on Linux)",
     )
     args = parser.parse_args(argv)
     try:
+        target_name = args.target
+        if target_name is None:
+            if sys.platform == "darwin":
+                target_name = "launchd"
+            elif sys.platform == "linux":
+                target_name = "systemd"
+            else:
+                raise ConfigError(
+                    f"no default scheduler target on {sys.platform}; "
+                    "pass --target launchd|systemd"
+                )
+        target = TARGETS[target_name]
         config = load_config(resolve_wiki_root(args.wiki))
         out_dir = args.out
         if out_dir is None:
-            if sys.platform != "darwin":
+            if sys.platform != target.host_platform:
                 raise ConfigError(
-                    "the default --out (~/Library/LaunchAgents) is macOS-only; "
+                    f"the default --out ({target.default_out}) only applies "
+                    f"where {target_name} is the host scheduler; "
                     "pass --out DIR on this platform"
                 )
-            out_dir = Path.home() / "Library" / "LaunchAgents"
+            out_dir = target.default_out
         out_dir = out_dir.expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
-        units = render_units(config)
+        units = render_units(config, target_name)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -175,9 +259,16 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(text, encoding="utf-8")
         print(f"wrote {path}")
     print()
-    print("Rendering never loads units. To (re)load on macOS:")
-    for path in unit_paths:
-        print(f"  launchctl unload {path} 2>/dev/null; launchctl load {path}")
+    if target_name == "launchd":
+        print("Rendering never loads units. To (re)load on macOS:")
+        for path in unit_paths:
+            print(f"  launchctl unload {path} 2>/dev/null; launchctl load {path}")
+    else:
+        print("Rendering never loads units. To (re)load with systemd --user:")
+        print("  systemctl --user daemon-reload")
+        for path in unit_paths:
+            if path.name.endswith(".timer"):
+                print(f"  systemctl --user enable --now {path.name}")
     return 0
 
 

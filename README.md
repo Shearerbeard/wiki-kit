@@ -22,9 +22,10 @@ already carries docs and an Obsidian vault (pre-existing content is
 never touched). The installer seeds `wiki.toml`, the content skeleton,
 the projections, an orientation skeleton, and the pre-commit hook; on a
 repo with no commits it creates an initial commit of exactly the files
-it wrote. Reinstalling is idempotent. On macOS it also renders launchd
-units for the night, morning, and garden-reminder jobs from
-`templates/launchd/` (`--no-scheduler` skips).
+it wrote. Reinstalling is idempotent. It also renders scheduler units
+for the night, morning, and garden-reminder jobs: launchd units on
+macOS from `templates/launchd/`, systemd user timers on Linux from
+`templates/systemd/` (`--no-scheduler` skips).
 
 Verify any deployment:
 

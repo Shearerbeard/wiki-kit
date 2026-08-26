@@ -1,0 +1,9 @@
+[Unit]
+Description=wiki morning reminder timer
+
+[Timer]
+OnCalendar={{ONCALENDAR}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

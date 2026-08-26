@@ -157,8 +157,13 @@ global_skills = ["garden", "handoff", "morning"]
 # Knob 12: scheduler units are installer-GENERATED from templates, never
 # checked in; launchd cannot expand $HOME or read env vars, so the three
 # com.aura.wiki-*.plist files cannot be parameterized in place. The
-# label prefix derives from [wiki].name (com.<name>.wiki-*). systemd
-# timer templates are K9's Linux equivalent.
+# label prefix derives from [wiki].name (com.<name>.wiki-*). Both
+# scheduler targets ship, generated per machine with shared labels:
+# launchd (templates/launchd/) on macOS, systemd user timers
+# (templates/systemd/) on Linux. Known limitation: a wiki root with
+# whitespace in its path renders fine but the systemd units may not run
+# - systemd unquotes ExecStart= but not WorkingDirectory= or the
+# StandardOutput= append: path, and the renderer warns on stderr.
 night = "03:00"
 morning = "08:30"
 garden_reminder = "16:00"
@@ -195,7 +200,7 @@ extra_dirs = ["-home-alex-src-widget-docs"]
 # AURA_GIT_BIN env defaults plus the one unguarded hardcode at
 # install.sh:128).
 uv = "/opt/homebrew/bin/uv"
-notifier = "/opt/homebrew/bin/terminal-notifier"   # notify-send on Linux
+notifier = "/opt/homebrew/bin/terminal-notifier"   # scripts/wiki-notify.sh wraps it: terminal-notifier (macOS), notify-send (Linux)
 git = "/usr/bin/git"
 # Where the kit checkout lives on this machine. Written by the
 # installer; the pre-commit wrapper resolves the kit through this key

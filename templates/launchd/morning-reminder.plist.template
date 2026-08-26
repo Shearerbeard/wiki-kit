@@ -44,6 +44,8 @@
         <string>{{NIGHT_REPORT_DIR}}</string>
         <key>WIKI_NIGHT_COMMIT_PREFIX</key>
         <string>{{NIGHT_COMMIT_PREFIX}}</string>
+        <key>WIKI_SCHEDULER_HINT</key>
+        <string>{{SCHEDULER_HINT}}</string>
     </dict>
 </dict>
 </plist>

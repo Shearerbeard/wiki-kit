@@ -41,6 +41,8 @@
         <string>{{UV_BIN}}</string>
         <key>WIKI_NOTIFIER_BIN</key>
         <string>{{NOTIFIER_BIN}}</string>
+        <key>WIKI_SCHEDULER_HINT</key>
+        <string>{{SCHEDULER_HINT}}</string>
     </dict>
 </dict>
 </plist>

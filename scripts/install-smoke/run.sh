@@ -298,6 +298,39 @@ check_shell "pre-existing content is byte-untouched" '
 check "doctor clean on the vault fixture" bash -c \
   'python3 "'"$KIT"'/scripts/wiki-doctor.py" --wiki "'"$VAULT"'" --strict-warnings'
 
+# ---- scheduler portability: systemd render for the fixture -----------
+# The container has no uv/notify-send, so stub the tool binaries and
+# point the fixture's overlay at them (the blank-fixture overlay holds
+# only [tools], so appended keys join that table).
+check_shell "systemd user units render for the fixture wiki" '
+  set -e
+  STUB_BIN=/work/smoke-tools
+  mkdir -p "$STUB_BIN"
+  for tool in uv notify-send git; do
+    printf "#!/usr/bin/env bash\nexit 0\n" > "$STUB_BIN/$tool"
+    chmod +x "$STUB_BIN/$tool"
+  done
+  printf "uv = \"%s/uv\"\nnotifier = \"%s/notify-send\"\ngit = \"%s/git\"\n" \
+    "$STUB_BIN" "$STUB_BIN" "$STUB_BIN" >> "'"$FIXTURE"'/wiki.local.toml"
+  UNITS=/work/systemd-units
+  python3 "'"$KIT"'/scripts/render_scheduler.py" --wiki "'"$FIXTURE"'" \
+    --target systemd --out "$UNITS" >/dev/null
+  [ "$(ls "$UNITS" | wc -l)" -eq 6 ]
+  ! grep -rq "{{" "$UNITS"
+  NAME=$(grep "^name = " "'"$FIXTURE"'/wiki.toml" | cut -d\" -f2)
+  for pair in night:night-shift morning:morning-reminder garden_reminder:garden-reminder; do
+    KEY="${pair%%:*}"
+    STEM="${pair##*:}"
+    TIME=$(grep "^$KEY = " "'"$FIXTURE"'/wiki.toml" | cut -d\" -f2)
+    grep -q "^OnCalendar=\*-\*-\* ${TIME}:00$" \
+      "$UNITS/com.${NAME}.wiki-${STEM}.timer"
+  done
+  grep -q "^Environment=\"WIKI_NOTIFIER_BIN=$STUB_BIN/notify-send\"$" \
+    "$UNITS/com.${NAME}.wiki-morning-reminder.service"
+  grep -q "^Environment=\"WIKI_NOTIFIER_BIN=$STUB_BIN/notify-send\"$" \
+    "$UNITS/com.${NAME}.wiki-garden-reminder.service"
+'
+
 write_json true 0
 write_markdown PASS
 echo "PASS: install smoke completed"

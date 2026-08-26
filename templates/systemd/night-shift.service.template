@@ -1,0 +1,11 @@
+[Unit]
+Description=wiki night shift (scheduled wiki night run)
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WIKI_ROOT}}
+ExecStart="{{UV_BIN}}" run --project "{{KIT_ROOT}}" "{{KIT_ROOT}}/scripts/wiki_night.py" run --scheduled --wiki "{{WIKI_ROOT}}"
+Environment="PATH={{PATH}}"
+Environment="HOME={{HOME}}"
+StandardOutput=append:{{LOG_DIR}}/night-shift-stdout.log
+StandardError=append:{{LOG_DIR}}/night-shift-stderr.log

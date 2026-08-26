@@ -20,8 +20,9 @@ The kit repo holds machinery; this installer wires a TARGET wiki repo
 - deny rules: derived from the deployment's own `[contract]` in
   `wiki.toml` - the single contract source the doctor and install-smoke
   also read - and merged into the wiki repo's `.claude/settings.json`.
-- scheduler units: rendered from the kit's templates on macOS (skipped
-  elsewhere; `--no-scheduler` skips explicitly).
+- scheduler units: rendered from the kit's templates (launchd on macOS,
+  systemd user timers on Linux, skipped elsewhere; `--no-scheduler`
+  skips explicitly).
 - orientation skeleton: an empty-state `CLAUDE.local.md` rendered
   through the real renderer, so carry-forward works from the first
   session (the blank-repo boot floor, charter decision 4).
@@ -448,11 +449,21 @@ def install_scheduler(config: WikiConfig, skip: bool) -> None:
     if skip:
         note("– scheduler skipped (--no-scheduler)")
         return
-    if platform.system() != "Darwin":
-        note("– scheduler skipped (launchd templates are macOS; this host is not)")
-        return
-    kit_cli("render_scheduler.py", "--wiki", str(config.root))
-    note("✓ scheduler units rendered from templates")
+    system = platform.system()
+    if system == "Darwin":
+        kit_cli("render_scheduler.py", "--wiki", str(config.root))
+        note("✓ scheduler units rendered from templates (launchd)")
+    elif system == "Linux":
+        kit_cli(
+            "render_scheduler.py",
+            "--wiki",
+            str(config.root),
+            "--target",
+            "systemd",
+        )
+        note("✓ scheduler units rendered from templates (systemd user timers)")
+    else:
+        note(f"– scheduler skipped (no scheduler target for {system})")
 
 
 def install(target: Path, no_scheduler: bool) -> None:

@@ -1,0 +1,15 @@
+[Unit]
+Description=wiki garden reminder (end-of-day pending-handoff check)
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WIKI_ROOT}}
+ExecStart=/bin/bash "{{KIT_ROOT}}/scripts/garden-reminder.sh" run
+Environment="PATH={{PATH}}"
+Environment="HOME={{HOME}}"
+Environment="WIKI_DIR={{WIKI_ROOT}}"
+Environment="WIKI_UV_BIN={{UV_BIN}}"
+Environment="WIKI_NOTIFIER_BIN={{NOTIFIER_BIN}}"
+Environment="WIKI_SCHEDULER_HINT={{SCHEDULER_HINT}}"
+StandardOutput=append:{{LOG_DIR}}/garden-reminder-stdout.log
+StandardError=append:{{LOG_DIR}}/garden-reminder-stderr.log

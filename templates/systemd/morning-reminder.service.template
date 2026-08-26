@@ -1,0 +1,17 @@
+[Unit]
+Description=wiki morning reminder (scheduled night-run review)
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WIKI_ROOT}}
+ExecStart=/bin/bash "{{KIT_ROOT}}/scripts/morning-reminder.sh"
+Environment="PATH={{PATH}}"
+Environment="HOME={{HOME}}"
+Environment="WIKI_DIR={{WIKI_ROOT}}"
+Environment="WIKI_GIT_BIN={{GIT_BIN}}"
+Environment="WIKI_NOTIFIER_BIN={{NOTIFIER_BIN}}"
+Environment="WIKI_NIGHT_REPORT_DIR={{NIGHT_REPORT_DIR}}"
+Environment="WIKI_NIGHT_COMMIT_PREFIX={{NIGHT_COMMIT_PREFIX}}"
+Environment="WIKI_SCHEDULER_HINT={{SCHEDULER_HINT}}"
+StandardOutput=append:{{LOG_DIR}}/morning-reminder-stdout.log
+StandardError=append:{{LOG_DIR}}/morning-reminder-stderr.log

@@ -91,9 +91,9 @@ reference is not a scoped file). Knob numbers cite
 | `scripts/build-index.py` | port | `DEFAULT_REPO` fallback becomes `companions.github` (knob 3); K4 adds budget selection |
 | `scripts/com.aura.wiki-garden-reminder.plist` | template | launchd cannot expand `$HOME`; installer generates units per machine from templates (knob 12); the static file does not travel |
 | `scripts/com.aura.wiki-morning-reminder.plist` | template | same as above |
-| `scripts/com.aura.wiki-night-shift.plist` | template | same as above; systemd timer template is K9's Linux twin |
+| `scripts/com.aura.wiki-night-shift.plist` | template | same as above; the systemd twin shipped at K3 (templates/systemd/) |
 | `scripts/garden-lock.py` | port | already generic |
-| `scripts/garden-reminder.sh` | port | `AURA_*` env names retired for `[tools]` overlay values (knob 11); notifier abstraction at K3 |
+| `scripts/garden-reminder.sh` | port | `AURA_*` env names retired for `[tools]` overlay values (knob 11); notifier abstraction landed at K3 (scripts/wiki-notify.sh) |
 | `scripts/generate-topology.py` | port | `FEATURE_BRANCH`, `TICKET_RE`, `mshearer/*` glob, output path become companion config (knobs 4, 5, 6, 14); ticket regex optional, off when absent |
 | `scripts/generate-topology.sh` | port | trivial wrapper |
 | `scripts/handoff.ts` | port | `HANDOFF_PATH` from `companions.docs_subpath` (knob 14) |

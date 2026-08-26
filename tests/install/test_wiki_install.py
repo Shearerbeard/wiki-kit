@@ -568,6 +568,62 @@ sys.path.insert(0, str(KIT_ROOT / "scripts"))
 import wiki_install  # noqa: E402
 
 
+def test_install_scheduler_dispatches_systemd_on_linux(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The installer renders systemd user timers on Linux hosts; the
+    render invocation must carry the explicit target."""
+    import wiki_config
+
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(
+        '[wiki]\nname = "acme-notes"\n\n[contract]\nprotected = ["wiki/log.md"]\n'
+    )
+    config = wiki_config.load_config(target)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(wiki_install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        wiki_install, "kit_cli", lambda script, *args: calls.append((script, *args))
+    )
+
+    wiki_install.install_scheduler(config, skip=False)
+
+    assert calls == [
+        (
+            "render_scheduler.py",
+            "--wiki",
+            str(config.root),
+            "--target",
+            "systemd",
+        )
+    ]
+    assert "systemd" in capsys.readouterr().out
+
+
+def test_install_scheduler_skips_unknown_platforms(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import wiki_config
+
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(
+        '[wiki]\nname = "acme-notes"\n\n[contract]\nprotected = ["wiki/log.md"]\n'
+    )
+    config = wiki_config.load_config(target)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(wiki_install.platform, "system", lambda: "FreeBSD")
+    monkeypatch.setattr(
+        wiki_install, "kit_cli", lambda script, *args: calls.append((script, *args))
+    )
+
+    wiki_install.install_scheduler(config, skip=False)
+
+    assert calls == []
+    assert "skipped" in capsys.readouterr().out
+
+
 def test_wrapper_error_lines_render_as_single_shell_lines() -> None:
     wrapper = wiki_install.hook_wrapper_text()
     for line in wrapper.splitlines():

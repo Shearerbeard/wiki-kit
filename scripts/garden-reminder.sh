@@ -16,7 +16,7 @@ if [ -z "${WIKI_DIR:-}" ]; then
 fi
 REPO="$WIKI_DIR"
 UV_BIN="${WIKI_UV_BIN:-uv}"
-NOTIFIER_BIN="${WIKI_NOTIFIER_BIN:-terminal-notifier}"
+NOTIFY_BIN="${WIKI_NOTIFY_BIN:-$SCRIPT_DIR/wiki-notify.sh}"
 
 set +e
 pending_output=$("$UV_BIN" run --project "$KIT_ROOT" \
@@ -40,7 +40,7 @@ else
     message="End-of-day check: ${pending_output} handoffs await /garden. Hand off any still-open sessions first, then run /garden."
 fi
 
-"$NOTIFIER_BIN" -title "$title" -message "$message" -sound Glass
+"$NOTIFY_BIN" routine "$title" "$message"
 
 if [ "$exit_status" -ne 0 ]; then
     echo "garden reminder could not determine the pending handoff count" >&2
