@@ -10,6 +10,5 @@ Environment="HOME={{HOME}}"
 Environment="WIKI_DIR={{WIKI_ROOT}}"
 Environment="WIKI_UV_BIN={{UV_BIN}}"
 Environment="WIKI_NOTIFIER_BIN={{NOTIFIER_BIN}}"
-Environment="WIKI_SCHEDULER_HINT={{SCHEDULER_HINT}}"
 StandardOutput=append:{{LOG_DIR}}/garden-reminder-stdout.log
 StandardError=append:{{LOG_DIR}}/garden-reminder-stderr.log

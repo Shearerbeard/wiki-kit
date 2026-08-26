@@ -43,7 +43,7 @@ notify() {
 if [ -n "${WIKI_SCHEDULER_HINT:-}" ]; then
     MISSING_HINT="Check scheduler status (${WIKI_SCHEDULER_HINT}) and run /morning."
 else
-    MISSING_HINT="Check launchd status and run /morning."
+    MISSING_HINT="Check scheduler status and run /morning."
 fi
 
 if [ ! -f "$REPORT" ]; then

@@ -176,14 +176,15 @@ def test_service_environment_mirrors_the_launchd_environment(fixture) -> None:
     assert f'Environment="WIKI_NOTIFIER_BIN={tools["notify-send"]}"' in morning
     assert 'Environment="WIKI_NIGHT_REPORT_DIR=journal/nightly"' in morning
     assert 'Environment="WIKI_NIGHT_COMMIT_PREFIX=nightly:"' in morning
+    # Only the morning reminder reads the hint (its "no report" message);
+    # garden-reminder.sh never reads it, so its unit does not carry it.
     hint = "systemctl --user list-timers 'com.acme-notes.wiki-*'"
     assert f'Environment="WIKI_SCHEDULER_HINT={hint}"' in morning
 
     garden = environment_lines(out_dir / "com.acme-notes.wiki-garden-reminder.service")
     assert f'Environment="WIKI_UV_BIN={tools["uv"]}"' in garden
     assert f'Environment="WIKI_NOTIFIER_BIN={tools["notify-send"]}"' in garden
-    # One hint covers the wiki's whole label prefix, identical per unit.
-    assert f'Environment="WIKI_SCHEDULER_HINT={hint}"' in garden
+    assert not any("WIKI_SCHEDULER_HINT" in line for line in garden)
 
     night = load_unit(out_dir / "com.acme-notes.wiki-night-shift.service")
     log_dir = wiki / "reports" / "scheduler-logs"
@@ -344,3 +345,49 @@ def test_launchd_target_does_not_warn_on_spaces(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "whitespace" not in result.stderr
+
+
+def test_quote_in_config_value_fails_systemd_but_not_launchd(
+    fixture, tmp_path: Path
+) -> None:
+    """A double-quote in a value would break out of the systemd unit's
+    Environment="..." quoting: the systemd render fails loud naming the
+    key; the launchd render passes it through (legal in plist element
+    text) and succeeds."""
+    wiki, _out_dir, _tools = fixture
+    text = (wiki / "wiki.toml").read_text()
+    (wiki / "wiki.toml").write_text(
+        text.replace('commit_prefix = "nightly:"', "commit_prefix = 'night\"'")
+    )
+
+    systemd = run_renderer(wiki, tmp_path / "systemd-units", "--target", "systemd")
+    assert systemd.returncode == 1
+    assert "NIGHT_COMMIT_PREFIX" in systemd.stderr
+
+    launchd = run_renderer(wiki, tmp_path / "launchd-units", "--target", "launchd")
+    assert launchd.returncode == 0, launchd.stderr
+    plist = (
+        tmp_path / "launchd-units" / "com.acme-notes.wiki-morning-reminder.plist"
+    ).read_text()
+    assert 'night"' in plist
+
+
+def test_token_text_inside_a_value_renders_literally(fixture, tmp_path: Path) -> None:
+    """Single-pass substitution: a config value holding the literal text
+    of another token is data - it renders as-is and is never rescanned,
+    while genuine template tokens still render."""
+    wiki, _out_dir, tools = fixture
+    text = (wiki / "wiki.toml").read_text()
+    (wiki / "wiki.toml").write_text(
+        text.replace('name = "acme-notes"', "name = 'x{{PATH}}'")
+    )
+    out_dir = tmp_path / "units"
+
+    result = run_renderer(wiki, out_dir, "--target", "launchd")
+
+    assert result.returncode == 0, result.stderr
+    plist = (out_dir / "com.x{{PATH}}.wiki-night-shift.plist").read_text()
+    # The wiki name's literal {{PATH}} survived substitution...
+    assert "com.x{{PATH}}.wiki-night-shift" in plist
+    # ...while the template's genuine {{PATH}} token rendered.
+    assert str(tools["uv"].parent) in plist

@@ -324,6 +324,8 @@ check_shell "systemd user units render for the fixture wiki" '
     TIME=$(grep "^$KEY = " "'"$FIXTURE"'/wiki.toml" | cut -d\" -f2)
     grep -q "^OnCalendar=\*-\*-\* ${TIME}:00$" \
       "$UNITS/com.${NAME}.wiki-${STEM}.timer"
+    grep -q "^WorkingDirectory=" "$UNITS/com.${NAME}.wiki-${STEM}.service"
+    grep -q "^ExecStart=" "$UNITS/com.${NAME}.wiki-${STEM}.service"
   done
   grep -q "^Environment=\"WIKI_NOTIFIER_BIN=$STUB_BIN/notify-send\"$" \
     "$UNITS/com.${NAME}.wiki-morning-reminder.service"

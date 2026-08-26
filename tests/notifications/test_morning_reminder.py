@@ -180,7 +180,7 @@ def test_missing_canonical_report_ignores_non_scheduled_reports(
 
     assert result.returncode == 0
     message = (
-        f"NIGHT RUN MISSING: no scheduled report for {TODAY}. Check launchd "
+        f"NIGHT RUN MISSING: no scheduled report for {TODAY}. Check scheduler "
         "status and run /morning."
     )
     assert notification(env) == expected_notification(

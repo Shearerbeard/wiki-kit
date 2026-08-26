@@ -160,10 +160,11 @@ global_skills = ["garden", "handoff", "morning"]
 # label prefix derives from [wiki].name (com.<name>.wiki-*). Both
 # scheduler targets ship, generated per machine with shared labels:
 # launchd (templates/launchd/) on macOS, systemd user timers
-# (templates/systemd/) on Linux. Known limitation: a wiki root with
-# whitespace in its path renders fine but the systemd units may not run
-# - systemd unquotes ExecStart= but not WorkingDirectory= or the
-# StandardOutput= append: path, and the renderer warns on stderr.
+# (templates/systemd/) on Linux. Known limitation: quoting is verified
+# only for ExecStart=; WorkingDirectory= and the
+# StandardOutput=/StandardError= append: paths are unquoted, so a wiki
+# root with whitespace may not run under systemd (unverified against a
+# live systemd; the renderer warns on stderr so the risk is loud).
 night = "03:00"
 morning = "08:30"
 garden_reminder = "16:00"
