@@ -327,6 +327,217 @@ class InstallTest(DockCase):
 SKILL_NAMES = ("garden", "handoff", "morning", "session-feedback")
 
 
+class OnboardingWiringTest(DockCase):
+    """The cold-start surface install produces: .wiki/orientation.md,
+    the AGENTS.md marker block, and the CLAUDE.md shim."""
+
+    def install(self, repo: Path, wiki: Path, *extra: str) -> tuple[int, str]:
+        return run_cli(
+            "install",
+            "--wiki",
+            str(wiki),
+            "--repo",
+            str(repo),
+            "--companion",
+            "widget",
+            "--posture",
+            "committed",
+            *extra,
+        )
+
+    def test_absent_files_are_created(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install(repo, wiki, "--skills-dir", ".agents/skills")
+        self.assertEqual(code, 0)
+
+        orientation = (repo / ".wiki" / "orientation.md").read_text()
+        self.assertIn("acme-notes", orientation)
+        self.assertIn("widget", orientation)
+        self.assertIn(str(wiki), orientation)
+        self.assertIn(".agents/skills/", orientation)
+        self.assertIn(f"uv run --project {KIT_ROOT}", orientation)
+        self.assertNotIn("{{", orientation)
+
+        agents = (repo / "AGENTS.md").read_text()
+        self.assertIn(wiki_dock.DOCK_BLOCK_START, agents)
+        self.assertIn(wiki_dock.DOCK_BLOCK_END, agents)
+        self.assertIn("acme-notes", agents)
+        self.assertIn(".wiki/orientation.md", agents)
+
+        claude = (repo / "CLAUDE.md").read_text()
+        self.assertIn("# CLAUDE.md", claude)
+        self.assertIn(wiki_dock.CLAUDE_SHIM_LINE, claude)
+
+    def test_existing_content_outside_the_block_is_preserved_byte_exact(
+        self,
+    ) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        agents_before = "# Consumer AGENTS\n\nHand-written rules.\n"
+        (repo / "AGENTS.md").write_text(agents_before)
+        claude_before = "# Notes\n\nConsumer-authored claude file.\n"
+        (repo / "CLAUDE.md").write_text(claude_before)
+        code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+
+        agents = (repo / "AGENTS.md").read_text()
+        self.assertTrue(agents.startswith(agents_before))
+        self.assertIn(wiki_dock.DOCK_BLOCK_START, agents)
+        # The block sits after a separating blank line.
+        self.assertIn(
+            agents_before + "\n" + wiki_dock.DOCK_BLOCK_START, agents
+        )
+        claude = (repo / "CLAUDE.md").read_text()
+        self.assertTrue(claude.startswith(claude_before))
+        self.assertIn(wiki_dock.DOCK_BLOCK_START, claude)
+
+    def test_reinstall_is_byte_identical(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install(repo, wiki, "--skills-dir", ".agents/skills")
+        watched = (
+            repo / ".wiki" / "orientation.md",
+            repo / "AGENTS.md",
+            repo / "CLAUDE.md",
+        )
+        before = {path: path.read_bytes() for path in watched}
+        code, out = self.install(repo, wiki, "--skills-dir", ".agents/skills")
+        self.assertEqual(code, 0)
+        self.assertIn("orientation up to date", out)
+        self.assertIn("dock block up to date", out)
+        self.assertEqual(before, {path: path.read_bytes() for path in watched})
+
+    def test_changed_wiki_name_replaces_only_the_block(self) -> None:
+        repo = self.init_repo(self.base / "consumer")
+        path = repo / "AGENTS.md"
+        original = (
+            "above\n"
+            f"{wiki_dock.DOCK_BLOCK_START}\nold wiki pointer\n"
+            f"{wiki_dock.DOCK_BLOCK_END}\nbelow\n"
+        )
+        path.write_text(original)
+        wiki_dock.update_marked_block(
+            path, wiki_dock.dock_block_text("new-notes"), "AGENTS.md"
+        )
+        text = path.read_text()
+        self.assertTrue(text.startswith("above\n"))
+        self.assertTrue(text.endswith("below\n"))
+        self.assertIn("new-notes", text)
+        self.assertNotIn("old wiki pointer", text)
+
+    def test_foreign_edit_inside_the_markers_is_replaced(self) -> None:
+        """The marked region is kit-owned: consumer edits inside it do
+        not survive a reinstall; edits outside it do, byte-exact."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install(repo, wiki)
+        path = repo / "AGENTS.md"
+        text = path.read_text()
+        edited = text.replace("acme-notes", "consumer scribble")
+        path.write_text("prepended line\n" + edited)
+        code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        result = path.read_text()
+        self.assertIn("acme-notes", result)
+        self.assertNotIn("consumer scribble", result)
+        self.assertTrue(result.startswith("prepended line\n"))
+
+    def test_orientation_is_ignored_in_committed_posture(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        gitignore = (repo / ".gitignore").read_text().splitlines()
+        self.assertIn(".wiki/orientation.md", gitignore)
+
+    def test_untracked_postures_exclude_the_entry_shims(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        code, _ = run_cli(
+            "install",
+            "--wiki",
+            str(wiki),
+            "--repo",
+            str(repo),
+            "--companion",
+            "widget",
+            "--posture",
+            "invisible",
+        )
+        self.assertEqual(code, 0)
+        exclude = (repo / ".git" / "info" / "exclude").read_text()
+        self.assertIn("AGENTS.md", exclude.splitlines())
+        self.assertIn("CLAUDE.md", exclude.splitlines())
+        self.assertTrue((repo / "AGENTS.md").exists())
+        self.assertTrue((repo / "CLAUDE.md").exists())
+        self.assertEqual(self.git(repo, "status", "--porcelain"), "")
+
+    def test_unknown_template_token_fails_before_any_write(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        bad = self.base / "bad-orientation.md.template"
+        bad.write_text("wiki {{WIKI_NAME}} at {{WIKI_ROT}}\n")
+        with mock.patch.object(wiki_dock, "ORIENTATION_TEMPLATE", bad):
+            code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 1)
+        self.assertFalse((repo / ".wiki").exists())
+        self.assertFalse((repo / "AGENTS.md").exists())
+
+    def test_claude_md_already_pointing_at_agents_is_left_alone(
+        self,
+    ) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        existing = "# CLAUDE.md\n\nSee AGENTS.md for the repo rules.\n"
+        (repo / "CLAUDE.md").write_text(existing)
+        code, out = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        self.assertIn("already points at AGENTS.md", out)
+        self.assertEqual((repo / "CLAUDE.md").read_text(), existing)
+
+    def test_malformed_markers_fail_loud(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        (repo / "AGENTS.md").write_text(
+            f"{wiki_dock.DOCK_BLOCK_START}\nno end marker\n"
+        )
+        code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 1)
+
+    def test_complete_renders_the_orientation(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dock = repo / ".wiki"
+        dock.mkdir()
+        (dock / "manifest.toml").write_text(
+            '[dock]\nwiki = "acme-notes"\ncompanion = "widget"\n',
+            encoding="utf-8",
+        )
+        code, _ = run_cli(
+            "complete", "--wiki", str(wiki), "--repo", str(repo)
+        )
+        self.assertEqual(code, 0)
+        orientation = (dock / "orientation.md").read_text()
+        self.assertIn("acme-notes", orientation)
+        self.assertIn(str(wiki), orientation)
+        self.assertIn("none rendered", orientation)
+
+    def test_complete_orientation_names_the_recorded_skill_dirs(
+        self,
+    ) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        self.install(repo, wiki, "--skills-dir", ".agents/skills")
+        (repo / ".wiki" / "orientation.md").unlink()
+        code, _ = run_cli(
+            "complete", "--wiki", str(wiki), "--repo", str(repo)
+        )
+        self.assertEqual(code, 0)
+        orientation = (repo / ".wiki" / "orientation.md").read_text()
+        self.assertIn(".agents/skills/", orientation)
+
+
 class SkillRenderTest(DockCase):
     def install_with_skills(
         self, repo: Path, wiki: Path, *extra: str

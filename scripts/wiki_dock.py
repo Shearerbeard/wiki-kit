@@ -7,12 +7,15 @@ kit's docs/docking-spec.md). This CLI is the only writer of
 consumer-side docks:
 
 - install: write the manifest and overlay, apply the posture's ignore
-  mechanics, and render the generated wiring (post-commit hook,
+  mechanics, render the consumer orientation (.wiki/orientation.md),
+  append the marker-delimited dock block to AGENTS.md (plus the
+  CLAUDE.md shim), and render the generated wiring (post-commit hook,
   opencode handoff plugin) for companions with an outbox subpath. With
   --skills-dir, also render the contracted workflow skills
   ([contract].skills) into the chosen repo-relative directories.
 - complete: create or update the overlay's [dock].path for an existing
-  manifest - the command the resolver's fail-loud message names.
+  manifest - the command the resolver's fail-loud message names - and
+  re-render the orientation.
 - status: report what the resolver sees at a repo, read-only. Exit 1
   when a dock exists but cannot resolve (incomplete overlay, broken
   path, identity mismatch); an undocked repo reports cleanly.
@@ -58,16 +61,38 @@ HANDOFF_PLUGIN_TEMPLATE = KIT_ROOT / "templates" / "handoff.ts.template"
 # [tools].kit path, so this record is machine-local like the overlay.
 RENDERED_SKILLS_FILE = "rendered-skills.json"
 
+# The consumer orientation: rendered from templates/orientation.md.template
+# into the dock, never committed in any posture (it embeds the
+# machine-local wiki root), so it rides the same ignore lines as the
+# overlay.
+ORIENTATION_NAME = "orientation.md"
+ORIENTATION_TEMPLATE = KIT_ROOT / "templates" / "orientation.md.template"
+
+# Harness entry wiring: AGENTS.md carries the dock block for the
+# AGENTS.md-reading harnesses; CLAUDE.md gets a one-line shim at it
+# (the boardkit shim convention) for claude-code. The block region
+# between the markers is kit-owned: reinstall replaces it wholesale and
+# never touches text outside the markers.
+AGENTS_FILE = "AGENTS.md"
+CLAUDE_FILE = "CLAUDE.md"
+DOCK_BLOCK_START = "<!-- wiki-kit:dock:start -->"
+DOCK_BLOCK_END = "<!-- wiki-kit:dock:end -->"
+CLAUDE_SHIM_LINE = (
+    "Read `AGENTS.md` first; it is the stable agent handoff for this repo."
+)
+
 # The ignore lines each posture applies: committed tracks the manifest
-# and ignores only the machine-local files (overlay, skill provenance);
-# gitignored and invisible ignore the whole dock (tracked .gitignore vs
-# the per-clone exclude file). Generated wiring joins these lines: the
-# handoff plugin for the untracked postures, the rendered skill dirs for
-# every posture (they embed the machine-local kit path).
+# and ignores only the machine-local files (overlay, skill provenance,
+# orientation); gitignored and invisible ignore the whole dock (tracked
+# .gitignore vs the per-clone exclude file). Generated wiring joins
+# these lines: the handoff plugin and the harness entry shims for the
+# untracked postures, the rendered skill dirs for every posture (they
+# embed the machine-local kit path).
 IGNORE_LINES = {
     "committed": (
         f"{DOCK_DIR_NAME}/{DOCK_OVERLAY_NAME}",
         f"{DOCK_DIR_NAME}/{RENDERED_SKILLS_FILE}",
+        f"{DOCK_DIR_NAME}/{ORIENTATION_NAME}",
     ),
     "gitignored": (f"{DOCK_DIR_NAME}/",),
     "invisible": (f"{DOCK_DIR_NAME}/",),
@@ -195,12 +220,19 @@ def apply_posture(
     posture: str,
     wiring_written: bool,
     skill_dirs: tuple[str, ...] = (),
+    shim_paths: tuple[str, ...] = (),
 ) -> None:
     lines = list(IGNORE_LINES[posture])
     if wiring_written and posture != "committed":
         # Generated shims follow the posture (docking spec): tracked
         # when committed, covered by the same exclusion set otherwise.
         lines.append(PLUGIN_REPO_PATH)
+    # The harness entry shims (AGENTS.md block, CLAUDE.md shim) follow
+    # the posture the same way: committed posture means the consumer
+    # commits them; the untracked postures exclude them so nothing
+    # wiki-related surfaces in git status.
+    if posture != "committed":
+        lines.extend(shim_paths)
     # Rendered skills are generated wiring in EVERY posture: they embed
     # the machine-local [tools].kit path, so a tracked render would put
     # a machine path in shared history, and a fresh clone (which has no
@@ -343,15 +375,9 @@ def prepare_skill_renders(
                 f"wiki.toml [contract].skills lists {name!r} but the kit "
                 f"ships no template at {template_path}"
             )
-        content = template_path.read_text(encoding="utf-8").replace(
-            "{{KIT_ROOT}}", kit_root
+        rendered[name] = render_template(
+            template_path, {"KIT_ROOT": kit_root}
         )
-        leftover = sorted(set(SKILL_PLACEHOLDER_RE.findall(content)))
-        if leftover:
-            raise DockError(
-                f"{template_path} has unrendered placeholders: {leftover}"
-            )
-        rendered[name] = content
     return rendered
 
 
@@ -495,6 +521,149 @@ def render_skills(
     _write_render_manifest(manifest_path, updated)
 
 
+def render_template(template: Path, values: dict[str, str]) -> str:
+    """Single-pass {{TOKEN}} substitution: any {{...}} span left over
+    after the known tokens render is a template bug and fails loud,
+    never survives rendering."""
+    content = template.read_text(encoding="utf-8")
+    for token, value in values.items():
+        content = content.replace("{{" + token + "}}", value)
+    leftover = sorted(set(SKILL_PLACEHOLDER_RE.findall(content)))
+    if leftover:
+        raise ConfigError(
+            f"{template} has unrendered placeholders: {leftover}"
+        )
+    return content
+
+
+def prepare_orientation(
+    wiki_name: str,
+    companion: str,
+    wiki_root: Path,
+    kit_root: str,
+    skill_dirs: tuple[str, ...],
+) -> str:
+    """Render the orientation text in preflight, before any dock write,
+    so a template bug fails loud with nothing half-applied."""
+    listing = "\n".join(f"- `{directory}/`" for directory in skill_dirs)
+    if not listing:
+        listing = (
+            "- none rendered; reinstall with --skills-dir to add them"
+        )
+    return render_template(
+        ORIENTATION_TEMPLATE,
+        {
+            "WIKI_NAME": wiki_name,
+            "COMPANION": companion,
+            "WIKI_ROOT": str(wiki_root),
+            "KIT_ROOT": kit_root,
+            "SKILL_DIRS": listing,
+        },
+    )
+
+
+def write_orientation(dock_dir: Path, content: str) -> None:
+    path = dock_dir / ORIENTATION_NAME
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        note("✓ orientation up to date")
+        return
+    dock_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    note(f"✓ orientation written to {path}")
+
+
+def recorded_skill_dirs(dock_dir: Path) -> tuple[str, ...]:
+    """The skill dirs the dock's provenance manifest records, for the
+    complete command's orientation re-render (complete does not take
+    --skills-dir; the manifest is the record of where install put them)."""
+    entries, _healthy = _load_render_manifest(
+        dock_dir / RENDERED_SKILLS_FILE
+    )
+    dirs = {str(Path(rel).parent.parent) for rel in entries}
+    return tuple(sorted(dirs))
+
+
+def dock_block_text(wiki_name: str) -> str:
+    return (
+        f"{DOCK_BLOCK_START}\n"
+        f"This repo is docked to the **{wiki_name}** wiki (wiki-kit). "
+        "Read `.wiki/orientation.md` first - it names the wiki root, "
+        "the rendered project skills, and the commands a session needs.\n"
+        f"{DOCK_BLOCK_END}"
+    )
+
+
+def update_marked_block(path: Path, block: str, label: str) -> None:
+    """Create or update a file carrying the kit's dock block. The region
+    between the markers is kit-owned and replaced wholesale; everything
+    outside the markers is preserved byte-exact, and a file with no
+    markers gains the block appended after a separating blank line."""
+    if not path.exists():
+        path.write_text(block + "\n", encoding="utf-8")
+        note(f"✓ {label} created with the wiki-kit dock block")
+        return
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    starts = [
+        i for i, line in enumerate(lines) if line.rstrip("\r\n") == DOCK_BLOCK_START
+    ]
+    ends = [
+        i for i, line in enumerate(lines) if line.rstrip("\r\n") == DOCK_BLOCK_END
+    ]
+    if starts or ends:
+        if len(starts) != 1 or len(ends) != 1 or starts[0] > ends[0]:
+            raise DockError(
+                f"{path} carries a malformed wiki-kit dock block; fix or "
+                "remove the markers by hand before reinstalling"
+            )
+        replacement = [line + "\n" for line in block.splitlines()]
+        new_text = "".join(
+            lines[: starts[0]] + replacement + lines[ends[0] + 1 :]
+        )
+        if new_text == text:
+            note(f"✓ {label} dock block up to date")
+            return
+        path.write_text(new_text, encoding="utf-8")
+        note(f"✓ {label} dock block updated")
+        return
+    if text and not text.endswith("\n"):
+        text += "\n"
+    separator = "\n" if text else ""
+    path.write_text(text + separator + block + "\n", encoding="utf-8")
+    note(f"✓ {label} gained the wiki-kit dock block")
+
+
+def ensure_claude_shim(repo: Path, block: str) -> None:
+    """claude-code reads CLAUDE.md, not AGENTS.md: an absent file gets
+    the one-line shim (the boardkit convention); a file that never
+    mentions AGENTS.md gets the dock block appended; one that already
+    points at AGENTS.md is left alone."""
+    path = repo / CLAUDE_FILE
+    if not path.exists():
+        path.write_text(
+            f"# CLAUDE.md\n\n{CLAUDE_SHIM_LINE}\n", encoding="utf-8"
+        )
+        note("✓ CLAUDE.md shim created")
+        return
+    if AGENTS_FILE in path.read_text(encoding="utf-8"):
+        note("✓ CLAUDE.md already points at AGENTS.md")
+        return
+    update_marked_block(path, block, CLAUDE_FILE)
+
+
+def planned_shim_paths(repo: Path) -> tuple[str, ...]:
+    """Which entry files install will write, computed in preflight so
+    the posture's exclusion set covers them. A CLAUDE.md that already
+    points at AGENTS.md is never written and never excluded."""
+    paths = [AGENTS_FILE]
+    claude = repo / CLAUDE_FILE
+    if not claude.exists() or AGENTS_FILE not in claude.read_text(
+        encoding="utf-8"
+    ):
+        paths.append(CLAUDE_FILE)
+    return tuple(paths)
+
+
 def _resolve_posture(flag: str | None, companion: Companion) -> str:
     """The companion table is the posture's one home (docking spec): an
     explicit flag may agree with it or supply it, never contradict."""
@@ -526,6 +695,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     dock_dir = repo / DOCK_DIR_NAME
     wired = companion.docs_subpath is not None
     skill_targets = resolve_skill_targets(repo, args.skills_dir or [])
+    kit_root = config.tool("kit", str(KIT_ROOT))
+    skill_rel_dirs = tuple(
+        str(target.relative_to(repo)) for target in skill_targets
+    )
+    shim_paths = planned_shim_paths(repo)
 
     # Every conflict check runs before any write: a failed install
     # leaves nothing half-applied. Skill preflight renders every template
@@ -538,7 +712,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         # {{KIT_ROOT}} renders from the deployment overlay's [tools].kit;
         # absent one, the kit performing this dock is the kit on record.
         skill_renders = prepare_skill_renders(
-            config.contract.skills, config.tool("kit", str(KIT_ROOT))
+            config.contract.skills, kit_root
         )
         check_skill_paths(
             repo,
@@ -546,17 +720,23 @@ def cmd_install(args: argparse.Namespace) -> int:
             skill_targets,
             dock_dir / RENDERED_SKILLS_FILE,
         )
+    orientation = prepare_orientation(
+        config.name, companion.name, wiki_root, kit_root, skill_rel_dirs
+    )
 
     write_manifest(dock_dir, config.name, companion.name)
     write_overlay(dock_dir, wiki_root)
+    write_orientation(dock_dir, orientation)
     apply_posture(
         repo,
         posture,
         wiring_written=wired,
-        skill_dirs=tuple(
-            str(target.relative_to(repo)) for target in skill_targets
-        ),
+        skill_dirs=skill_rel_dirs,
+        shim_paths=shim_paths,
     )
+    block = dock_block_text(config.name)
+    update_marked_block(repo / AGENTS_FILE, block, AGENTS_FILE)
+    ensure_claude_shim(repo, block)
     if wired:
         install_post_commit_hook(repo, wiki_root, companion.docs_subpath)
         render_handoff_plugin(repo, companion.docs_subpath)
@@ -587,6 +767,15 @@ def cmd_complete(args: argparse.Namespace) -> int:
     dock = load_dock(dock_dir)
     verify_dock_identity(dock, wiki_root)
     write_overlay(dock_dir, wiki_root)
+    config = load_config(wiki_root)
+    orientation = prepare_orientation(
+        dock.wiki_name,
+        dock.companion,
+        wiki_root,
+        config.tool("kit", str(KIT_ROOT)),
+        recorded_skill_dirs(dock_dir),
+    )
+    write_orientation(dock_dir, orientation)
     print(f"Dock at {dock_dir} now resolves to {wiki_root}.")
     return 0
 
