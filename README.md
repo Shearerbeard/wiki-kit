@@ -33,15 +33,24 @@ Verify any deployment:
 python3 scripts/wiki-doctor.py --wiki /path/to/your/wiki
 ```
 
+Dock a consumer repo to a wiki and walk the first session:
+`docs/ADOPTION.md` (install, dock, postures, verify) and
+`docs/QUICKSTART.md` (the first-session loop).
+
 ## How the pieces fit
 
 - `scripts/wiki_config.py` finds the wiki root (explicit `--wiki` flag,
-  or walk-up to `wiki.toml` bounded at the git toplevel; the `.wiki/`
-  consumer-dock steps of the resolution order in
-  `docs/docking-spec.md` arrive with the docking stage) and loads the
+  `WIKI_DOCK` env, walk-up through `.wiki/` consumer docks bounded at
+  the git toplevel - the resolution order in `docs/docking-spec.md`)
+  and loads the
   config pair: committed `wiki.toml` for semantic values, gitignored
   `wiki.local.toml` for machine paths, with a hard allowlist on what
   the overlay may set.
+- `scripts/wiki-dock.py` docks a consumer repo: manifest + overlay,
+  posture ignore mechanics, the rendered orientation
+  (`.wiki/orientation.md`), the `AGENTS.md` dock block and `CLAUDE.md`
+  shim, and project-scoped skill renders. `scripts/wiki-probe.py`
+  drives each supported harness headlessly to prove it sees the dock.
 - `scripts/wiki-event.py` writes and validates events against the
   registry in `schemas/` (versioned, never loosened). `new-handoff`
   records a session; `build-pending` rebuilds the pending projection.
