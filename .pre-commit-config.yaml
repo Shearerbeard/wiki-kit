@@ -1,0 +1,28 @@
+# Deterministic gates on every commit. One-time install:
+#   brew install pre-commit gitleaks
+#   pre-commit install --hook-type pre-commit --hook-type commit-msg
+# Run the file-stage hooks by hand: pre-commit run --all-files
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      # Commit message shape (.commitlintrc.yaml). npx fetches the
+      # pinned CLI into its cache on first use; no node_modules here.
+      - id: commitlint
+        name: commit message shape (commitlint)
+        entry: npx --yes -p @commitlint/cli@19.8.1 commitlint --edit
+        language: system
+        stages: [commit-msg]
+
+      # Commit message prose (.vale.ini's COMMIT_EDITMSG section). The
+      # style pack is optional maintainer tooling (see .vale.ini), so a
+      # clone without it skips rather than fails.
+      - id: vale-commit-msg
+        name: commit message prose (Vale)
+        entry: sh -c 'if [ -d .vale/styles/ai-tells ]; then exec vale --no-global --ext=.md "$@"; else echo "vale style pack not linked; skipping commit-message prose lint"; fi' --
+        language: system
+        stages: [commit-msg]

@@ -24,6 +24,24 @@ scripts/install-smoke/run.sh   # Docker end-to-end against a blank
 If you have the maintainer's Vale style pack symlinked into `.vale/`
 (see `.vale.ini`), run `vale` on every markdown file you touch.
 
+### Hooks
+
+`.pre-commit-config.yaml` runs gitleaks on the staged tree and, at the
+commit-msg stage, commitlint (`.commitlintrc.yaml`) plus the Vale
+commit-message gate when the style pack is linked. One-time install:
+
+```sh
+brew install pre-commit gitleaks
+pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+`pre-commit run --all-files` runs the file-stage hooks by hand. To
+check a message without committing:
+
+```sh
+npx --yes -p @commitlint/cli commitlint --edit path/to/message.txt
+```
+
 ## House rules
 
 - Fail loud. No speculative fallbacks, no empty defaults for missing
