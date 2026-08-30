@@ -489,14 +489,30 @@ class OnboardingWiringTest(DockCase):
     ) -> None:
         wiki = self.make_wiki()
         repo = self.init_repo(self.base / "consumer")
-        existing = "# CLAUDE.md\n\nSee AGENTS.md for the repo rules.\n"
+        existing = "# CLAUDE.md\n\nProject notes.\n@AGENTS.md\n"
         (repo / "CLAUDE.md").write_text(existing)
         code, out = self.install(repo, wiki)
         self.assertEqual(code, 0)
         self.assertIn("already points at AGENTS.md", out)
         self.assertEqual((repo / "CLAUDE.md").read_text(), existing)
 
-    def test_malformed_markers_fail_loud(self) -> None:
+    def test_claude_md_mentioning_agents_in_prose_gains_the_block(
+        self,
+    ) -> None:
+        """A mention is not a pointer: claude-code follows @AGENTS.md
+        imports and the kit shim, not prose."""
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        existing = "# CLAUDE.md\n\nDo not read AGENTS.md; it is stale.\n"
+        (repo / "CLAUDE.md").write_text(existing)
+        code, out = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        self.assertIn("CLAUDE.md gained the wiki-kit dock block", out)
+        text = (repo / "CLAUDE.md").read_text()
+        self.assertTrue(text.startswith(existing))
+        self.assertIn(wiki_dock.DOCK_BLOCK_START, text)
+
+    def test_malformed_markers_fail_before_any_write(self) -> None:
         wiki = self.make_wiki()
         repo = self.init_repo(self.base / "consumer")
         (repo / "AGENTS.md").write_text(
@@ -504,6 +520,76 @@ class OnboardingWiringTest(DockCase):
         )
         code, _ = self.install(repo, wiki)
         self.assertEqual(code, 1)
+        self.assertFalse((repo / ".wiki").exists())
+        self.assertFalse((repo / ".gitignore").exists())
+        self.assertFalse((repo / "CLAUDE.md").exists())
+
+    def test_markers_quoted_in_a_fence_are_documentation(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        quoted = (
+            "# Notes\n\nThe kit's markers look like this:\n\n```\n"
+            f"{wiki_dock.DOCK_BLOCK_START}\nexample\n"
+            f"{wiki_dock.DOCK_BLOCK_END}\n```\n"
+        )
+        (repo / "AGENTS.md").write_text(quoted)
+        code, out = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        self.assertIn("AGENTS.md gained the wiki-kit dock block", out)
+        text = (repo / "AGENTS.md").read_text()
+        self.assertTrue(text.startswith(quoted))
+        self.assertEqual(text.count(wiki_dock.DOCK_BLOCK_START), 2)
+        code, out = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        self.assertIn("AGENTS.md dock block up to date", out)
+        self.assertEqual((repo / "AGENTS.md").read_text(), text)
+
+    def test_crlf_file_keeps_its_line_endings(self) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        existing = "# Agents\r\n\r\nWindows-authored notes.\r\n"
+        with (repo / "AGENTS.md").open("w", newline="") as handle:
+            handle.write(existing)
+        code, _ = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        with (repo / "AGENTS.md").open(newline="") as handle:
+            text = handle.read()
+        self.assertTrue(text.startswith(existing))
+        self.assertNotIn("\n", text.replace("\r\n", ""))
+        code, out = self.install(repo, wiki)
+        self.assertEqual(code, 0)
+        self.assertIn("AGENTS.md dock block up to date", out)
+
+    def test_brace_text_in_a_value_renders_literally(self) -> None:
+        template = self.base / "t.md.template"
+        template.write_text("root {{WIKI_ROOT}} kit {{KIT_ROOT}}\n")
+        rendered = wiki_dock.render_template(
+            template, {"WIKI_ROOT": "/w/{{KIT_ROOT}}", "KIT_ROOT": "/k"}
+        )
+        self.assertEqual(rendered, "root /w/{{KIT_ROOT}} kit /k\n")
+
+    def test_complete_with_a_template_bug_leaves_the_overlay_alone(
+        self,
+    ) -> None:
+        wiki = self.make_wiki()
+        repo = self.init_repo(self.base / "consumer")
+        dock = repo / ".wiki"
+        dock.mkdir()
+        (dock / "manifest.toml").write_text(
+            '[dock]\nwiki = "acme-notes"\ncompanion = "widget"\n',
+            encoding="utf-8",
+        )
+        stale = '[dock]\npath = "/stale/acme-notes"\n'
+        (dock / "local.toml").write_text(stale, encoding="utf-8")
+        bad = self.base / "bad-orientation.md.template"
+        bad.write_text("wiki {{WIKI_NAME}} at {{WIKI_ROT}}\n")
+        with mock.patch.object(wiki_dock, "ORIENTATION_TEMPLATE", bad):
+            code, _ = run_cli(
+                "complete", "--wiki", str(wiki), "--repo", str(repo)
+            )
+        self.assertEqual(code, 1)
+        self.assertEqual((dock / "local.toml").read_text(), stale)
+        self.assertFalse((dock / "orientation.md").exists())
 
     def test_complete_renders_the_orientation(self) -> None:
         wiki = self.make_wiki()
@@ -570,8 +656,10 @@ class SkillRenderTest(DockCase):
             ".claude/skills",
         )
         self.assertEqual(code, 0)
+        contracted = wiki_config.load_config(wiki).contract.skills
+        self.assertEqual(sorted(contracted), sorted(SKILL_NAMES))
         for target in (".agents/skills", ".claude/skills"):
-            for name in SKILL_NAMES:
+            for name in contracted:
                 text = self.rendered(repo, target, name)
                 self.assertIn(f"name: {name}", text)
                 # Fold shell line continuations before matching.

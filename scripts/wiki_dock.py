@@ -42,6 +42,7 @@ from wiki_config import (  # noqa: E402
     DOCK_OVERLAY_NAME,
     KIT_ROOT,
     POSTURES,
+    RENDERED_SKILLS_FILE,
     Companion,
     ConfigError,
     dock_complete_command,
@@ -59,7 +60,6 @@ HANDOFF_PLUGIN_TEMPLATE = KIT_ROOT / "templates" / "handoff.ts.template"
 # where it was both an unchecked write path and forgeable by the same
 # actor editing the skill. The rendered content embeds the machine-local
 # [tools].kit path, so this record is machine-local like the overlay.
-RENDERED_SKILLS_FILE = "rendered-skills.json"
 
 # The consumer orientation: rendered from templates/orientation.md.template
 # into the dock, never committed in any posture (it embeds the
@@ -80,6 +80,9 @@ DOCK_BLOCK_END = "<!-- wiki-kit:dock:end -->"
 CLAUDE_SHIM_LINE = (
     "Read `AGENTS.md` first; it is the stable agent handoff for this repo."
 )
+# claude-code's file-import syntax: the other way a CLAUDE.md points at
+# AGENTS.md.
+CLAUDE_IMPORT_LINE = "@AGENTS.md"
 
 # The ignore lines each posture applies: committed tracks the manifest
 # and ignores only the machine-local files (overlay, skill provenance,
@@ -522,18 +525,19 @@ def render_skills(
 
 
 def render_template(template: Path, values: dict[str, str]) -> str:
-    """Single-pass {{TOKEN}} substitution: any {{...}} span left over
-    after the known tokens render is a template bug and fails loud,
-    never survives rendering."""
+    """Single-pass {{TOKEN}} substitution: a token in the template with
+    no value is a template bug and fails loud before any write; brace
+    text inside a value renders literally and is never re-scanned."""
     content = template.read_text(encoding="utf-8")
-    for token, value in values.items():
-        content = content.replace("{{" + token + "}}", value)
-    leftover = sorted(set(SKILL_PLACEHOLDER_RE.findall(content)))
-    if leftover:
+    known = {"{{" + token + "}}" for token in values}
+    unknown = sorted(set(SKILL_PLACEHOLDER_RE.findall(content)) - known)
+    if unknown:
         raise ConfigError(
-            f"{template} has unrendered placeholders: {leftover}"
+            f"{template} has unrendered placeholders: {unknown}"
         )
-    return content
+    return SKILL_PLACEHOLDER_RE.sub(
+        lambda match: values[match.group(0)[2:-2]], content
+    )
 
 
 def prepare_orientation(
@@ -593,51 +597,98 @@ def dock_block_text(wiki_name: str) -> str:
     )
 
 
+def _read_exact(path: Path) -> str:
+    """The file's text with its line endings intact (universal-newline
+    reading would fold CRLF into LF and break byte-exact preservation)."""
+    with path.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def _block_bounds(lines: list[str], path: Path) -> tuple[int, int] | None:
+    """Locate the kit-owned region: exactly one start and one end marker,
+    each on a line of its own and outside fenced code blocks (a fence may
+    quote the markers as documentation). None means no block; anything
+    else is malformed and fails loud."""
+    starts: list[int] = []
+    ends: list[int] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        bare = line.rstrip("\r\n")
+        if bare.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if bare == DOCK_BLOCK_START:
+            starts.append(index)
+        elif bare == DOCK_BLOCK_END:
+            ends.append(index)
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or len(ends) != 1 or starts[0] > ends[0]:
+        raise DockError(
+            f"{path} carries a malformed wiki-kit dock block; fix or "
+            "remove the markers by hand before reinstalling"
+        )
+    return starts[0], ends[0]
+
+
+def check_marked_block(path: Path) -> None:
+    """Preflight for update_marked_block: a malformed block fails the
+    install before any write lands."""
+    if path.exists():
+        _block_bounds(_read_exact(path).splitlines(keepends=True), path)
+
+
 def update_marked_block(path: Path, block: str, label: str) -> None:
     """Create or update a file carrying the kit's dock block. The region
     between the markers is kit-owned and replaced wholesale; everything
-    outside the markers is preserved byte-exact, and a file with no
-    markers gains the block appended after a separating blank line."""
+    outside the markers is preserved byte-exact (the file's own line
+    endings included), and a file with no markers gains the block
+    appended after a separating blank line - the one case that touches
+    existing bytes is a last line with no newline, which gains one so
+    the block can start on a line of its own."""
     if not path.exists():
         path.write_text(block + "\n", encoding="utf-8")
         note(f"✓ {label} created with the wiki-kit dock block")
         return
-    text = path.read_text(encoding="utf-8")
+    text = _read_exact(path)
     lines = text.splitlines(keepends=True)
-    starts = [
-        i for i, line in enumerate(lines) if line.rstrip("\r\n") == DOCK_BLOCK_START
-    ]
-    ends = [
-        i for i, line in enumerate(lines) if line.rstrip("\r\n") == DOCK_BLOCK_END
-    ]
-    if starts or ends:
-        if len(starts) != 1 or len(ends) != 1 or starts[0] > ends[0]:
-            raise DockError(
-                f"{path} carries a malformed wiki-kit dock block; fix or "
-                "remove the markers by hand before reinstalling"
-            )
-        replacement = [line + "\n" for line in block.splitlines()]
-        new_text = "".join(
-            lines[: starts[0]] + replacement + lines[ends[0] + 1 :]
-        )
+    newline = "\r\n" if "\r\n" in text else "\n"
+    rendered = block.replace("\n", newline) + newline
+    bounds = _block_bounds(lines, path)
+    if bounds is not None:
+        start, end = bounds
+        new_text = "".join(lines[:start]) + rendered + "".join(lines[end + 1 :])
         if new_text == text:
             note(f"✓ {label} dock block up to date")
             return
-        path.write_text(new_text, encoding="utf-8")
+        path.write_text(new_text, encoding="utf-8", newline="")
         note(f"✓ {label} dock block updated")
         return
     if text and not text.endswith("\n"):
-        text += "\n"
-    separator = "\n" if text else ""
-    path.write_text(text + separator + block + "\n", encoding="utf-8")
+        text += newline
+    separator = newline if text else ""
+    path.write_text(text + separator + rendered, encoding="utf-8", newline="")
     note(f"✓ {label} gained the wiki-kit dock block")
+
+
+def claude_points_at_agents(repo: Path) -> bool:
+    """A CLAUDE.md points at AGENTS.md when it imports it (claude-code's
+    `@AGENTS.md` syntax) or carries the kit's shim line. A mention in
+    prose is not a pointer: that file still gets the dock block."""
+    path = repo / CLAUDE_FILE
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    return CLAUDE_IMPORT_LINE in text or CLAUDE_SHIM_LINE in text
 
 
 def ensure_claude_shim(repo: Path, block: str) -> None:
     """claude-code reads CLAUDE.md, not AGENTS.md: an absent file gets
-    the one-line shim (the boardkit convention); a file that never
-    mentions AGENTS.md gets the dock block appended; one that already
-    points at AGENTS.md is left alone."""
+    the one-line shim (the boardkit convention); a file that does not
+    point at AGENTS.md gets the dock block appended; one that does is
+    left alone."""
     path = repo / CLAUDE_FILE
     if not path.exists():
         path.write_text(
@@ -645,7 +696,7 @@ def ensure_claude_shim(repo: Path, block: str) -> None:
         )
         note("✓ CLAUDE.md shim created")
         return
-    if AGENTS_FILE in path.read_text(encoding="utf-8"):
+    if claude_points_at_agents(repo):
         note("✓ CLAUDE.md already points at AGENTS.md")
         return
     update_marked_block(path, block, CLAUDE_FILE)
@@ -656,10 +707,7 @@ def planned_shim_paths(repo: Path) -> tuple[str, ...]:
     the posture's exclusion set covers them. A CLAUDE.md that already
     points at AGENTS.md is never written and never excluded."""
     paths = [AGENTS_FILE]
-    claude = repo / CLAUDE_FILE
-    if not claude.exists() or AGENTS_FILE not in claude.read_text(
-        encoding="utf-8"
-    ):
+    if not claude_points_at_agents(repo):
         paths.append(CLAUDE_FILE)
     return tuple(paths)
 
@@ -705,6 +753,8 @@ def cmd_install(args: argparse.Namespace) -> int:
     # leaves nothing half-applied. Skill preflight renders every template
     # completely and proves every write path stays inside the repo.
     _check_manifest_slot(dock_dir, config.name, companion.name)
+    for shim in shim_paths:
+        check_marked_block(repo / shim)
     if wired:
         _check_hook_slot(hooks / "post-commit")
     skill_renders: dict[str, str] = {}
@@ -766,8 +816,9 @@ def cmd_complete(args: argparse.Namespace) -> int:
         )
     dock = load_dock(dock_dir)
     verify_dock_identity(dock, wiki_root)
-    write_overlay(dock_dir, wiki_root)
     config = load_config(wiki_root)
+    # Render before any write, as install does: a template bug leaves
+    # the overlay untouched.
     orientation = prepare_orientation(
         dock.wiki_name,
         dock.companion,
@@ -775,6 +826,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
         config.tool("kit", str(KIT_ROOT)),
         recorded_skill_dirs(dock_dir),
     )
+    write_overlay(dock_dir, wiki_root)
     write_orientation(dock_dir, orientation)
     print(f"Dock at {dock_dir} now resolves to {wiki_root}.")
     return 0

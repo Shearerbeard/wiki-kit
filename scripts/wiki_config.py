@@ -49,6 +49,9 @@ OVERLAY_FILE_NAME = "wiki.local.toml"
 
 DOCK_DIR_NAME = ".wiki"
 DOCK_MANIFEST_NAME = "manifest.toml"
+# The dock's provenance record of rendered skills (written by wiki-dock
+# install, read by the probe); machine-local like the overlay.
+RENDERED_SKILLS_FILE = "rendered-skills.json"
 DOCK_OVERLAY_NAME = "local.toml"
 DOCK_ENV = "WIKI_DOCK"
 
