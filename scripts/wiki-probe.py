@@ -5,8 +5,9 @@ For each requested harness, invoke the harness headlessly with cwd at
 the consumer repo, ask it to quote the dock's orientation pointer and
 list the rendered project skills, and grade the output: PASS iff the
 wiki name appears (case-insensitive) AND all but at most one of the
-kit's skill names appear (the tolerance covers harnesses whose skill
-listing is capped). Empty output, a timeout, or a non-zero harness exit
+skill names the dock's rendered-skills record lists appear (the
+tolerance covers harnesses whose skill listing is capped). Empty
+output, a timeout, or a non-zero harness exit
 is a FAIL with the reason named. The raw transcript lands in the
 consumer's .wiki/probes/ either way - a stall is a failed probe, never
 a silent pass.
@@ -127,8 +128,10 @@ def load_expectations(repo: Path) -> tuple[str, tuple[str, ...]]:
         )
     record = json.loads(record_path.read_text(encoding="utf-8"))
     renders = record.get("renders") if isinstance(record, dict) else None
-    if not isinstance(renders, dict):
-        raise ConfigError(f"{record_path} is not a rendered-skills record")
+    if not isinstance(renders, dict) or record.get("version") != 1:
+        raise ConfigError(
+            f"{record_path} is not a version 1 rendered-skills record"
+        )
     skill_names = tuple(sorted({Path(rel).parent.name for rel in renders}))
     if not skill_names:
         raise ConfigError(

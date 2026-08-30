@@ -187,6 +187,20 @@ class LoadExpectationsTest(unittest.TestCase):
             ):
                 wiki_probe.load_expectations(repo)
 
+    def test_wrong_record_version_fails_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _docked_repo(
+                tmp, {".agents/skills/handoff/SKILL.md": "x"}
+            )
+            record = repo / ".wiki" / "rendered-skills.json"
+            record.write_text(
+                record.read_text().replace('"version": 1', '"version": 2')
+            )
+            with self.assertRaisesRegex(
+                wiki_probe.ConfigError, "version 1 rendered-skills record"
+            ):
+                wiki_probe.load_expectations(repo)
+
     def test_empty_record_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _docked_repo(tmp, {})

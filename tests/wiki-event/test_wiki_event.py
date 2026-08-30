@@ -275,6 +275,26 @@ class WikiEventCliTest(CliHarness):
                 Path(manifest["event_path"]).resolve(), event_path.resolve()
             )
 
+    def test_capture_sources_refuses_an_ambiguous_bare_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            event_path = self.create_event(events_dir)
+            twin = events_dir / "2001" / "01" / event_path.name
+            twin.parent.mkdir(parents=True)
+            twin.write_text(event_path.read_text())
+            result = self.assert_command_fails(
+                "capture-sources",
+                "--event",
+                event_path.stem,
+                "--events-dir",
+                events_dir,
+                "--sources-dir",
+                Path(tmp) / "sources",
+                "--source",
+                f"plan={TEST_DIR / 'source-note.md'}",
+            )
+            self.assertIn("is ambiguous: 2 files", result.stderr)
+
     def test_capture_sources_names_both_event_forms_on_a_miss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             events_dir = Path(tmp) / "events"

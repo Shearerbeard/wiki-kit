@@ -1325,6 +1325,12 @@ def resolve_event_arg(events_dir: Path, arg: Path) -> Path:
     matches = [path for path in event_files(events_dir) if path.stem == str(arg)]
     if len(matches) == 1:
         return matches[0]
+    if matches:
+        listed = ", ".join(str(path) for path in matches)
+        raise ValueError(
+            f"event id {arg} is ambiguous: {len(matches)} files under "
+            f"{events_dir} carry it ({listed}); pass the path"
+        )
     raise ValueError(
         f"--event must be an event JSON path or an event id stored under "
         f"{events_dir}; {arg} is neither"
