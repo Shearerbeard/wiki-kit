@@ -81,6 +81,9 @@ project-scoped only - machine-global paths are refused.
   committed in any posture.
 - `.wiki/orientation.md` - the rendered cold-start orientation; never
   committed in any posture (it embeds the machine-local wiki root).
+- `.wiki/probes/` - where the harness probe (step 5) writes its
+  transcripts; ignored in every posture, since they quote the
+  orientation's machine paths.
 - `AGENTS.md` - a marker-delimited dock block
   (`<!-- wiki-kit:dock:start -->` / `:end -->`) appended to an existing
   file, or the file created if absent. Text outside the markers is

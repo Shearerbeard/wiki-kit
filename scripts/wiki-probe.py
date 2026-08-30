@@ -38,6 +38,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from wiki_config import (  # noqa: E402
     DOCK_DIR_NAME,
     DOCK_MANIFEST_NAME,
+    PROBES_DIR_NAME,
     RENDERED_SKILLS_FILE,
     ConfigError,
 )
@@ -178,7 +179,7 @@ def run_harness(harness: str, repo: Path, prompt: str) -> tuple[str, str | None]
 
 
 def save_transcript(repo: Path, harness: str, transcript: str) -> Path:
-    probes = repo / DOCK_DIR_NAME / "probes"
+    probes = repo / DOCK_DIR_NAME / PROBES_DIR_NAME
     probes.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     path = probes / f"{harness}-{stamp}.txt"

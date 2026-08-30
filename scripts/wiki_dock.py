@@ -42,6 +42,7 @@ from wiki_config import (  # noqa: E402
     DOCK_OVERLAY_NAME,
     KIT_ROOT,
     POSTURES,
+    PROBES_DIR_NAME,
     RENDERED_SKILLS_FILE,
     Companion,
     ConfigError,
@@ -86,16 +87,17 @@ CLAUDE_IMPORT_LINE = "@AGENTS.md"
 
 # The ignore lines each posture applies: committed tracks the manifest
 # and ignores only the machine-local files (overlay, skill provenance,
-# orientation); gitignored and invisible ignore the whole dock (tracked
-# .gitignore vs the per-clone exclude file). Generated wiring joins
-# these lines: the handoff plugin and the harness entry shims for the
-# untracked postures, the rendered skill dirs for every posture (they
-# embed the machine-local kit path).
+# orientation, probe transcripts); gitignored and invisible ignore the
+# whole dock (tracked .gitignore vs the per-clone exclude file).
+# Generated wiring joins these lines: the handoff plugin and the
+# harness entry shims for the untracked postures, the rendered skill
+# dirs for every posture (they embed the machine-local kit path).
 IGNORE_LINES = {
     "committed": (
         f"{DOCK_DIR_NAME}/{DOCK_OVERLAY_NAME}",
         f"{DOCK_DIR_NAME}/{RENDERED_SKILLS_FILE}",
         f"{DOCK_DIR_NAME}/{ORIENTATION_NAME}",
+        f"{DOCK_DIR_NAME}/{PROBES_DIR_NAME}/",
     ),
     "gitignored": (f"{DOCK_DIR_NAME}/",),
     "invisible": (f"{DOCK_DIR_NAME}/",),

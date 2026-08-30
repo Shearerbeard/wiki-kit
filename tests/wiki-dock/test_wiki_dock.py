@@ -136,6 +136,7 @@ class InstallTest(DockCase):
         gitignore = (repo / ".gitignore").read_text()
         self.assertIn(".wiki/local.toml", gitignore.splitlines())
         self.assertIn(".wiki/rendered-skills.json", gitignore.splitlines())
+        self.assertIn(".wiki/probes/", gitignore.splitlines())
 
         hook = repo / ".git" / "hooks" / "post-commit"
         text = hook.read_text()
@@ -936,6 +937,8 @@ class SkillRenderTest(DockCase):
         self.assertTrue(self.ignored(repo, ".agents/skills/garden/SKILL.md"))
         self.assertTrue(self.ignored(repo, ".wiki/rendered-skills.json"))
         self.assertTrue(self.ignored(repo, ".wiki/local.toml"))
+        # Probe transcripts quote the orientation's machine paths.
+        self.assertTrue(self.ignored(repo, ".wiki/probes/claude-code-1.txt"))
         self.assertFalse(self.ignored(repo, ".wiki/manifest.toml"))
 
     def test_fresh_clone_rerenders_skills_without_stale_refusal(
