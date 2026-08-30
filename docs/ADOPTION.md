@@ -18,7 +18,11 @@ touched, and reinstalling is idempotent. The installer also renders
 scheduler units for the night, morning, and garden-reminder jobs
 (launchd on macOS, systemd user timers on Linux; `--no-scheduler`
 skips). Schedule times and the rest of the config surface are documented
-in `wiki-toml-schema.md`.
+in `wiki-toml-schema.md`. Rendering never loads a unit: run the
+`launchctl` or `systemctl --user` lines the installer prints. On Linux
+the units bake in the `uv`, `git`, and `notify-send` the installer finds
+on `PATH`, so run it from a login shell or set `[tools]` in
+`wiki.local.toml`.
 
 Already have a wiki installed? Skip to step 2.
 
@@ -35,7 +39,10 @@ docs_subpath = "docs/wiki-outbox"  # optional; enables the post-commit
 
 The companion table is the single home for everything semantic about
 this consumer (docking-spec.md); the wiki's gitignored
-`wiki.local.toml` overlay may carry its machine path.
+`wiki.local.toml` overlay may carry its machine path. With two or more
+companions, `[wiki].default_companion` must name the one that bare
+`#N` references and repo-less workstreams resolve to; the config does
+not load without it.
 
 ## 3. Dock the consumer
 
@@ -78,7 +85,8 @@ project-scoped only - machine-global paths are refused.
   (`<!-- wiki-kit:dock:start -->` / `:end -->`) appended to an existing
   file, or the file created if absent. Text outside the markers is
   preserved byte-exact; the marked region is kit-owned and replaced on
-  reinstall.
+  reinstall. Prose outside the markers is yours: if it already describes
+  the wiki by path, reconcile it after docking.
 - `CLAUDE.md` - created as a one-line shim pointing at `AGENTS.md` if
   absent; the dock block is appended if it exists without an AGENTS.md
   pointer; left alone if it already points at `AGENTS.md`.

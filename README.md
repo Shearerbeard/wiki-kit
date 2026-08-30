@@ -14,9 +14,13 @@ this checkout.
 ## Quick start
 
 ```sh
+uv sync                                       # once per kit checkout
 scripts/install.sh --wiki /path/to/your/wiki
 ```
 
+`install.sh` runs on the kit's `.venv`; without one it falls back to a
+`python3` that has `jsonschema`, then to `uv run`, and otherwise stops
+and names the fix.
 Works on a blank directory, an existing git repo, or a directory that
 already carries docs and an Obsidian vault (pre-existing content is
 never touched). The installer seeds `wiki.toml`, the content skeleton,

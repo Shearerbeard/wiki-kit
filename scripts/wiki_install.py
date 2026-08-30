@@ -544,6 +544,10 @@ def install(target: Path, no_scheduler: bool) -> None:
     initial_commit(target, written)
     render_orientation(config)
     install_scheduler(config, no_scheduler)
+    print(
+        "Project skills are rendered per consumer by wiki-dock.py install "
+        "--skills-dir (docs/ADOPTION.md); this step installs none."
+    )
     print("Done. Verify:")
     print(f"  ls -la {hooks_dir(target) / 'pre-commit'}")
     print(f"  {sys.executable} {KIT_SCRIPTS / 'wiki-doctor.py'} --wiki {target}")
