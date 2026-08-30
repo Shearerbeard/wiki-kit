@@ -9,6 +9,7 @@ import json
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -778,7 +779,49 @@ def parse_workstream(value: str) -> dict[str, str]:
     return {"name": name, "relationship": relationship, "proposed_action": action}
 
 
+def repo_facts_from_git(checkout: Path) -> tuple[str, str]:
+    """Branch and full sha of a checkout, read from git itself so the
+    event's identity cannot be mistyped."""
+
+    def rev_parse(*flags: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", *flags],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"--repo-from-git {checkout}: git rev-parse {' '.join(flags)} "
+                f"failed: {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
+
+    branch = rev_parse("--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        raise ValueError(
+            f"--repo-from-git {checkout}: detached HEAD has no branch; "
+            "pass --repo-branch"
+        )
+    return branch, rev_parse("HEAD")
+
+
+def handoff_repo_identity(args: argparse.Namespace) -> tuple[str, str]:
+    branch, sha = args.repo_branch, args.repo_sha
+    checkout = getattr(args, "repo_from_git", None)
+    if checkout is not None:
+        git_branch, git_sha = repo_facts_from_git(checkout)
+        branch = branch or git_branch
+        sha = sha or git_sha
+    if branch is None or sha is None:
+        raise ValueError(
+            "new-handoff needs --repo-branch and --repo-sha, or "
+            "--repo-from-git <checkout> to derive them"
+        )
+    return branch, sha
+
+
 def build_handoff_event(args: argparse.Namespace) -> dict[str, Any]:
+    repo_branch, repo_sha = handoff_repo_identity(args)
     timestamp = args.timestamp if args.timestamp else utc_timestamp()
     if args.timestamp:
         require(
@@ -794,8 +837,8 @@ def build_handoff_event(args: argparse.Namespace) -> dict[str, Any]:
         "tool": args.tool,
         "repo": {
             "name": args.repo_name,
-            "branch": args.repo_branch,
-            "sha": args.repo_sha,
+            "branch": repo_branch,
+            "sha": repo_sha,
         },
         "sources": [parse_source(value) for value in args.source],
         "proposed_workstreams": [parse_workstream(value) for value in args.workstream],
@@ -1268,32 +1311,69 @@ def pending_mismatch(
     return mismatches
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    event = load_json(args.event)
+def _validate_event_file(path: Path) -> None:
+    """Dispatch validation by event type; schemas come from the registry."""
+    event = load_json(path)
     event_type = event.get("event_type", "")
+    if event_type == EventType.GARDEN_APPLY:
+        validate_garden_apply_event(event)
+    elif event_type == EventType.HANDOFF:
+        validate_event(event)
+    else:
+        raise ValueError(f"unknown event_type '{event_type}', no schema available")
 
+
+def _validate_store(args: argparse.Namespace) -> Path:
+    """The store validate resolves ids and --all against; derived from the
+    wiki only when a path argument does not settle the invocation."""
+    events_dir = getattr(args, "events_dir", None)
+    if events_dir is None:
+        events_dir = _wiki_root_for(args) / "wiki" / "events"
+    return events_dir
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
     try:
-        # Dispatch validation by event type; schemas come from the registry.
-        if event_type == EventType.GARDEN_APPLY:
-            validate_garden_apply_event(event)
-        elif event_type == EventType.HANDOFF:
-            validate_event(event)
-        else:
-            print(
-                f"error: unknown event_type '{event_type}', no schema available",
-                file=sys.stderr,
+        if args.all:
+            if args.event is not None:
+                raise ValueError(
+                    "--all validates the whole store; drop the event argument"
+                )
+            events_dir = _validate_store(args)
+            paths = event_files(events_dir)
+            if not paths:
+                raise ValueError(f"no events under {events_dir}")
+            for path in paths:
+                try:
+                    _validate_event_file(path)
+                except (
+                    json.JSONDecodeError,
+                    KeyError,
+                    ValidationError,
+                    ValueError,
+                ) as exc:
+                    raise ValueError(f"{path}: {exc}") from exc
+                print(f"valid: {path}")
+            return 0
+        if args.event is None:
+            raise ValueError(
+                "pass an event JSON path or a bare event id, or --all for the store"
             )
-            return 1
+        path = args.event
+        if not path.is_file():
+            path = resolve_event_arg(_validate_store(args), path)
+        _validate_event_file(path)
     except (
         json.JSONDecodeError,
         KeyError,
         OSError,
         ValidationError,
         ValueError,
+        wiki_config.ConfigError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"valid: {args.event}")
+    print(f"valid: {path}")
     return 0
 
 
@@ -1313,6 +1393,14 @@ def cmd_new_handoff(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(path)
+    # stdout stays the bare event path callers parse; the remaining steps
+    # of a handoff go to stderr, since the store write leaves the log
+    # projection stale until the renderer runs.
+    print(
+        "next: render the log (scripts/wiki-render.py log) and commit the "
+        "wiki; the handoff skill lists the full sequence",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -1629,10 +1717,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_parser = subparsers.add_parser(
         "validate",
-        help="validate an event JSON file",
+        help="validate one event (by path or bare id) or the whole store (--all)",
         parents=[wiki_parent],
     )
-    validate_parser.add_argument("event", type=Path)
+    validate_parser.add_argument(
+        "event",
+        type=Path,
+        nargs="?",
+        help="event JSON path, or a bare event id resolved against the store",
+    )
+    validate_parser.add_argument(
+        "--all", action="store_true", help="validate every event in the store"
+    )
+    validate_parser.add_argument(
+        "--events-dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="event store (default: <wiki>/wiki/events)",
+    )
     validate_parser.set_defaults(func=cmd_validate)
 
     status_parser = subparsers.add_parser(
@@ -1690,8 +1792,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="slug of the repo the session worked in (e.g. acme-notes)",
     )
-    handoff_parser.add_argument("--repo-branch", required=True)
-    handoff_parser.add_argument("--repo-sha", required=True)
+    handoff_parser.add_argument(
+        "--repo-branch", help="branch the session worked on (see --repo-from-git)"
+    )
+    handoff_parser.add_argument(
+        "--repo-sha", help="commit the session ended at (see --repo-from-git)"
+    )
+    handoff_parser.add_argument(
+        "--repo-from-git",
+        type=Path,
+        help="derive --repo-branch and --repo-sha from this checkout; "
+        "an explicit flag overrides the derived value",
+    )
     handoff_parser.add_argument(
         "--source",
         action="append",

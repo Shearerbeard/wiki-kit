@@ -295,6 +295,147 @@ class WikiEventCliTest(CliHarness):
             )
             self.assertIn("is ambiguous: 2 files", result.stderr)
 
+    def test_validate_accepts_a_bare_event_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            event_path = self.create_event(events_dir)
+            result = self.assert_command_ok(
+                "validate", "--events-dir", events_dir, event_path.stem
+            )
+            self.assertIn(f"valid: {event_path}", result.stdout)
+
+    def test_validate_all_walks_the_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            first = self.create_event(events_dir)
+            second = self.create_event(events_dir)
+            result = self.assert_command_ok(
+                "validate", "--events-dir", events_dir, "--all"
+            )
+            self.assertIn(f"valid: {first}", result.stdout)
+            self.assertIn(f"valid: {second}", result.stdout)
+            second.write_text("{}")
+            result = self.assert_command_fails(
+                "validate", "--events-dir", events_dir, "--all"
+            )
+            self.assertIn(str(second), result.stderr)
+
+    def test_validate_without_an_event_names_both_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.assert_command_fails(
+                "validate", "--events-dir", Path(tmp) / "events"
+            )
+            self.assertIn("--all", result.stderr)
+            self.assertIn("bare event id", result.stderr)
+
+    def seed_checkout(self, checkout: Path) -> str:
+        """A one-commit git checkout on branch trunk; returns its full sha."""
+        checkout.mkdir()
+        git = ["git", "-C", str(checkout)]
+        subprocess.run([*git, "init", "-q", "-b", "trunk"], check=True)
+        subprocess.run(
+            [
+                *git,
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ],
+            check=True,
+        )
+        return subprocess.run(
+            [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    def new_handoff_args(self, events_dir: Path, *repo_flags: object) -> list[object]:
+        return [
+            "new-handoff",
+            "--events-dir",
+            events_dir,
+            "--tool",
+            "manual",
+            "--summary",
+            "Repo identity from git.",
+            "--repo-name",
+            "acme-notes",
+            *repo_flags,
+            "--source",
+            "plan=plans/example.md",
+            "--workstream",
+            "wiki-system:primary:update",
+        ]
+
+    def test_new_handoff_derives_repo_identity_from_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            sha = self.seed_checkout(Path(tmp) / "checkout")
+            derived = self.assert_command_ok(
+                *self.new_handoff_args(
+                    events_dir, "--repo-from-git", Path(tmp) / "checkout"
+                )
+            )
+            event = json.loads(Path(derived.stdout.strip()).read_text())
+            self.assertEqual(event["repo"], {
+                "name": "acme-notes", "branch": "trunk", "sha": sha
+            })
+            overridden = self.assert_command_ok(
+                *self.new_handoff_args(
+                    events_dir,
+                    "--repo-from-git",
+                    Path(tmp) / "checkout",
+                    "--repo-sha",
+                    "deadbee7",
+                )
+            )
+            event = json.loads(Path(overridden.stdout.strip()).read_text())
+            self.assertEqual(event["repo"]["branch"], "trunk")
+            self.assertEqual(event["repo"]["sha"], "deadbee7")
+
+    def test_new_handoff_without_repo_identity_names_the_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.assert_command_fails(
+                *self.new_handoff_args(Path(tmp) / "events", "--repo-branch", "main")
+            )
+            self.assertIn("--repo-from-git", result.stderr)
+            result = self.assert_command_fails(
+                *self.new_handoff_args(
+                    Path(tmp) / "events", "--repo-from-git", Path(tmp) / "nowhere"
+                )
+            )
+            self.assertIn("git rev-parse", result.stderr)
+            detached = Path(tmp) / "detached"
+            sha = self.seed_checkout(detached)
+            subprocess.run(
+                ["git", "-C", str(detached), "checkout", "-q", "--detach", sha],
+                check=True,
+            )
+            result = self.assert_command_fails(
+                *self.new_handoff_args(
+                    Path(tmp) / "events", "--repo-from-git", Path(tmp) / "detached"
+                )
+            )
+            self.assertIn("detached HEAD", result.stderr)
+
+    def test_new_handoff_keeps_stdout_to_the_path_and_names_next_steps(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            result = self.assert_command_ok(
+                *self.new_handoff_args(
+                    events_dir, "--repo-branch", "main", "--repo-sha", "4c0f549"
+                )
+            )
+            lines = result.stdout.strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(Path(lines[0]).is_file())
+            self.assertIn("wiki-render.py log", result.stderr)
+
     def test_capture_sources_names_both_event_forms_on_a_miss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             events_dir = Path(tmp) / "events"
