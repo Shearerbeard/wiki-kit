@@ -322,9 +322,13 @@ def check_pending_projection(
         # e.g. a dangling symlink smuggled under the store (also rejected
         # by the added-events check).
         return [f"pending projection check failed to run: {exc}"]
+    # new-handoff and garden apply already rebuild the projection on disk,
+    # so an unstaged wiki/pending/ is the common cause; a stale one needs
+    # the builder first.
     return [
-        f"wiki/pending is generated - {mismatch}; run the pending builder "
-        "and re-stage"
+        f"wiki/pending is generated - {mismatch}; stage wiki/pending/ if the "
+        "working copy is current, else run wiki-event.py build-pending and "
+        "stage it"
         for mismatch in mismatches
     ]
 
