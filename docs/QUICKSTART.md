@@ -45,7 +45,7 @@ contradictory wiki state that is not yours to fix, the
 ```sh
 uv run --project /path/to/kit /path/to/kit/scripts/wiki-render.py log
 uv run --project /path/to/kit /path/to/kit/scripts/wiki-render.py claude-local
-python3 /path/to/kit/scripts/wiki-doctor.py --wiki /path/to/wiki
+uv run --project /path/to/kit /path/to/kit/scripts/wiki-doctor.py --wiki /path/to/wiki
 ```
 
 The renderers own the projections (`wiki/log.md`, `CLAUDE.local.md`) -

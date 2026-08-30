@@ -12,6 +12,9 @@ content.
   `.wiki/local.toml` (never committed, per the dock posture)
 - Every kit CLI resolves the wiki through the dock: run commands from
   anywhere in this repo, no `--wiki` flag needed.
+- Kit friction (a CLI, skill, or doc that misled you) is filed
+  upstream in `{{KIT_ROOT}}/FEEDBACK.md`, never in the wiki; the
+  `session-feedback` skill covers wiki-state contradictions only.
 
 ## Project skills rendered into this repo
 

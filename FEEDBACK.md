@@ -2,10 +2,10 @@
 
 This file is wiki-kit's intake for process friction found while using the
 kit from a consumer repo. Consumers append entries here; nobody edits the
-kit's templates or code from a consumer repo. A maintainer session drains
-entries into `docs/plans/` (or rejects them with a recorded reason) and
-deletes them from this file; the plans are the durable record, this file is
-a queue.
+kit's templates or code from a consumer repo. A maintainer session disposes
+each entry - a fix in the kit, or a rejection with a recorded reason - and
+deletes it from this file; the commit that deletes an entry names its
+disposition and is the durable record. This file is a queue.
 
 Format mirrors boardkit's `FEEDBACK.md` (see its own file for the fuller
 rationale) since wiki-kit already follows boardkit's conventions elsewhere

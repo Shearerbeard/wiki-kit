@@ -47,7 +47,7 @@ not load without it.
 ## 3. Dock the consumer
 
 ```sh
-/path/to/kit/scripts/wiki-dock.py install \
+uv run --project /path/to/kit /path/to/kit/scripts/wiki-dock.py install \
   --wiki /path/to/wiki \
   --repo /path/to/consumer \
   --companion widget \
@@ -107,15 +107,15 @@ write lands.
 ## 5. Verify
 
 ```sh
-python3 /path/to/kit/scripts/wiki-doctor.py --wiki /path/to/wiki
-/path/to/kit/scripts/wiki-dock.py status --repo /path/to/consumer
+uv run --project /path/to/kit /path/to/kit/scripts/wiki-doctor.py --wiki /path/to/wiki
+uv run --project /path/to/kit /path/to/kit/scripts/wiki-dock.py status --repo /path/to/consumer
 ```
 
 Doctor checks are triaged in `DOCTOR-TRIAGE.md`. To prove a harness
 sees the dock, run the probe:
 
 ```sh
-python3 /path/to/kit/scripts/wiki-probe.py \
+uv run --project /path/to/kit /path/to/kit/scripts/wiki-probe.py \
   --repo /path/to/consumer --harness all
 ```
 

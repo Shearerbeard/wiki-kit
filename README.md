@@ -34,8 +34,12 @@ macOS from `templates/launchd/`, systemd user timers on Linux from
 Verify any deployment:
 
 ```sh
-python3 scripts/wiki-doctor.py --wiki /path/to/your/wiki
+uv run scripts/wiki-doctor.py --wiki /path/to/your/wiki
 ```
+
+Every kit CLI runs the same way: `uv run` inside the checkout, or
+`uv run --project /path/to/kit /path/to/kit/scripts/<cli>` from
+anywhere. Bare `python3` works only where it can import `jsonschema`.
 
 Dock a consumer repo to a wiki and walk the first session:
 `docs/ADOPTION.md` (install, dock, postures, verify) and

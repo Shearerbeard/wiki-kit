@@ -474,8 +474,15 @@ def _append_session_update(body: str, event: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Garden dispatcher for wiki events")
-    parser.add_argument("event", type=Path, help="event JSON file to apply")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Apply a handoff event to its workstream page and record the "
+            "disposition. To record a disposition without applying "
+            "(applied-manually, rejected, superseded), use "
+            "wiki-event.py new-garden-apply."
+        )
+    )
+    parser.add_argument("event", type=Path, help="handoff event JSON file to apply")
     parser.add_argument("--wiki", type=Path, default=None)
     parser.add_argument(
         "--force",

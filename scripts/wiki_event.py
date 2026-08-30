@@ -1651,7 +1651,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     garden_apply_parser = subparsers.add_parser(
         "new-garden-apply",
-        help="write a manual, rejected, or superseding handoff disposition",
+        help=(
+            "record a handoff disposition without applying it (applied-manually, "
+            "rejected, superseded); wiki-garden.py is the apply"
+        ),
         parents=[wiki_parent],
     )
     garden_apply_parser.add_argument("--target", required=True)
