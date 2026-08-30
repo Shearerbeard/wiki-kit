@@ -1316,16 +1316,32 @@ def cmd_new_handoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_event_arg(events_dir: Path, arg: Path) -> Path:
+    """An --event value is an event JSON path or a bare event id; the id
+    resolves against the store so callers need not know its year/month
+    layout (the form `status` already takes)."""
+    if arg.is_file():
+        return arg
+    matches = [path for path in event_files(events_dir) if path.stem == str(arg)]
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError(
+        f"--event must be an event JSON path or an event id stored under "
+        f"{events_dir}; {arg} is neither"
+    )
+
+
 def cmd_capture_sources(args: argparse.Namespace) -> int:
     try:
-        event = load_json(args.event)
+        event_arg = resolve_event_arg(args.events_dir, args.event)
+        event = load_json(event_arg)
         validate_event(event)
         sources = [parse_capture_source(value) for value in args.source]
         # Manifests feed build_pending_index, so manifest writes serialize
         # with every other store writer under the same lock.
         with EventWriteLock(args.events_dir):
             manifest_path, manifest = build_capture_manifest(
-                args.event,
+                event_arg,
                 event,
                 args.sources_dir,
                 sources,
@@ -1736,7 +1752,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="copy source files and write an event-linked manifest",
         parents=[wiki_parent],
     )
-    capture_parser.add_argument("--event", type=Path, required=True)
+    capture_parser.add_argument(
+        "--event",
+        type=Path,
+        required=True,
+        help="event JSON path, or a bare event id resolved against the store",
+    )
     capture_parser.add_argument(
         "--source",
         action="append",

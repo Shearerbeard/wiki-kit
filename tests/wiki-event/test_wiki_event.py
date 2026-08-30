@@ -254,6 +254,44 @@ class WikiEventCliTest(CliHarness):
                 f"plan={TEST_DIR / 'source-note.md'}",
             )
 
+    def test_capture_sources_accepts_a_bare_event_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            event_path = self.create_event(events_dir)
+            result = self.assert_command_ok(
+                "capture-sources",
+                "--event",
+                event_path.stem,
+                "--events-dir",
+                events_dir,
+                "--sources-dir",
+                Path(tmp) / "sources",
+                "--source",
+                f"plan={TEST_DIR / 'source-note.md'}",
+            )
+            manifest = json.loads(Path(result.stdout.strip()).read_text())
+            self.assertEqual(manifest["event_id"], event_path.stem)
+            self.assertEqual(
+                Path(manifest["event_path"]).resolve(), event_path.resolve()
+            )
+
+    def test_capture_sources_names_both_event_forms_on_a_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = Path(tmp) / "events"
+            self.create_event(events_dir)
+            result = self.assert_command_fails(
+                "capture-sources",
+                "--event",
+                "not-an-event-id",
+                "--events-dir",
+                events_dir,
+                "--sources-dir",
+                Path(tmp) / "sources",
+                "--source",
+                f"plan={TEST_DIR / 'source-note.md'}",
+            )
+            self.assertIn("event JSON path or an event id", result.stderr)
+
     def test_capture_sources_fails_on_corrupt_existing_capture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             events_dir = Path(tmp) / "events"
