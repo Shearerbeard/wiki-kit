@@ -109,8 +109,10 @@ python3 /path/to/kit/scripts/wiki-probe.py \
 ```
 
 Each probe drives one harness headlessly and grades whether it names
-the wiki and sees the rendered skills; transcripts land in the
-consumer's `.wiki/probes/`.
+the wiki and sees the skills the dock recorded as rendered; transcripts
+land in the consumer's `.wiki/probes/`. `all` covers the supported
+harnesses installed on this machine and names the ones it skips; an
+explicit `--harness` fails when its binary is absent.
 
 ## 6. Reinstalls and upgrades
 

@@ -20,7 +20,9 @@ prompt is read-only.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -35,7 +37,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from wiki_config import (  # noqa: E402
     DOCK_DIR_NAME,
     DOCK_MANIFEST_NAME,
-    KIT_ROOT,
+    RENDERED_SKILLS_FILE,
     ConfigError,
 )
 
@@ -86,6 +88,10 @@ def harness_command(harness: str, prompt: str) -> list[str]:
     return commands[harness]
 
 
+def installed(harness: str) -> bool:
+    return shutil.which(harness_command(harness, "")[0]) is not None
+
+
 def probe_prompt(wiki_name: str, skill_names: tuple[str, ...]) -> str:
     return (
         "This is a read-only check; do not create, edit, or delete any "
@@ -97,8 +103,8 @@ def probe_prompt(wiki_name: str, skill_names: tuple[str, ...]) -> str:
 
 
 def load_expectations(repo: Path) -> tuple[str, tuple[str, ...]]:
-    """The wiki name from the dock manifest and the skill name set from
-    the kit's canonical skills dir."""
+    """The wiki name from the dock manifest and the skill names from the
+    dock's rendered-skills record."""
     manifest_path = repo / DOCK_DIR_NAME / DOCK_MANIFEST_NAME
     if not manifest_path.is_file():
         raise ConfigError(
@@ -113,16 +119,22 @@ def load_expectations(repo: Path) -> tuple[str, tuple[str, ...]]:
         raise ConfigError(
             f"{manifest_path} is missing [dock].wiki"
         ) from exc
-    skills_dir = KIT_ROOT / ".agents" / "skills"
-    skill_names = tuple(
-        sorted(
-            path.name
-            for path in skills_dir.iterdir()
-            if (path / "SKILL.md").is_file()
+    record_path = repo / DOCK_DIR_NAME / RENDERED_SKILLS_FILE
+    if not record_path.is_file():
+        raise ConfigError(
+            f"{record_path} not found; no skills were rendered into this "
+            "repo (run wiki-dock install with --skills-dir)"
         )
-    )
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    renders = record.get("renders") if isinstance(record, dict) else None
+    if not isinstance(renders, dict):
+        raise ConfigError(f"{record_path} is not a rendered-skills record")
+    skill_names = tuple(sorted({Path(rel).parent.name for rel in renders}))
     if not skill_names:
-        raise ConfigError(f"no skills found under {skills_dir}")
+        raise ConfigError(
+            f"{record_path} records no rendered skills; reinstall with "
+            "--skills-dir"
+        )
     return wiki_name, skill_names
 
 
@@ -144,9 +156,15 @@ def run_harness(harness: str, repo: Path, prompt: str) -> tuple[str, str | None]
             timeout=PROBE_TIMEOUT,
         )
     except subprocess.TimeoutExpired as exc:
-        partial = (exc.stdout or "") + (exc.stderr or "")
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
+        # On timeout the captured output arrives as bytes even in text
+        # mode, and either stream may be None.
+        partial = "".join(
+            part.decode("utf-8", errors="replace")
+            if isinstance(part, bytes)
+            else part
+            for part in (exc.stdout, exc.stderr)
+            if part
+        )
         return partial, f"timed out after {PROBE_TIMEOUT}s"
     except FileNotFoundError:
         return "", f"{command[0]} is not installed"
@@ -210,7 +228,21 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"wiki-probe: {exc}", file=sys.stderr)
         return 1
-    harnesses = HARNESSES if args.harness == "all" else (args.harness,)
+    if args.harness == "all":
+        # `all` means every supported harness this machine has; an explicit
+        # --harness still fails loud when its binary is absent.
+        harnesses = tuple(name for name in HARNESSES if installed(name))
+        for name in HARNESSES:
+            if name not in harnesses:
+                print(
+                    f"SKIP {name} - {harness_command(name, '')[0]} is not "
+                    "installed"
+                )
+        if not harnesses:
+            print("wiki-probe: no supported harness is installed", file=sys.stderr)
+            return 1
+    else:
+        harnesses = (args.harness,)
     results = {
         harness: probe(repo, harness, wiki_name, skill_names)
         for harness in harnesses

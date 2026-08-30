@@ -8,11 +8,16 @@ consumer).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 KIT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -112,6 +117,129 @@ class HarnessCommandTest(unittest.TestCase):
             self.assertEqual(
                 wiki_probe.harness_command(harness, "PROMPT"), expected
             )
+
+
+def _docked_repo(tmp: str, renders: dict[str, str] | None) -> Path:
+    repo = Path(tmp)
+    dock = repo / ".wiki"
+    dock.mkdir()
+    (dock / "manifest.toml").write_text(
+        '[dock]\nwiki = "acme-notes"\ncompanion = "widget"\n'
+    )
+    if renders is not None:
+        (dock / "rendered-skills.json").write_text(
+            json.dumps({"version": 1, "renders": renders})
+        )
+    return repo
+
+
+class RunHarnessTest(unittest.TestCase):
+    def test_absent_binary_is_a_named_failure(self) -> None:
+        with mock.patch.object(
+            wiki_probe,
+            "harness_command",
+            return_value=["wiki-probe-no-such-binary", "PROMPT"],
+        ):
+            transcript, failure = wiki_probe.run_harness(
+                "codex", Path.cwd(), "PROMPT"
+            )
+        self.assertEqual(transcript, "")
+        self.assertEqual(failure, "wiki-probe-no-such-binary is not installed")
+
+    def test_timeout_is_a_failure_that_keeps_the_partial_transcript(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                wiki_probe,
+                "harness_command",
+                return_value=["sh", "-c", "echo partial; exec sleep 5"],
+            ),
+            mock.patch.object(wiki_probe, "PROBE_TIMEOUT", 0.5),
+        ):
+            transcript, failure = wiki_probe.run_harness(
+                "codex", Path.cwd(), "PROMPT"
+            )
+        self.assertIn("partial", transcript)
+        self.assertEqual(failure, "timed out after 0.5s")
+
+
+class LoadExpectationsTest(unittest.TestCase):
+    def test_skill_names_come_from_the_rendered_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _docked_repo(
+                tmp,
+                {
+                    ".claude/skills/handoff/SKILL.md": "sha",
+                    ".agents/skills/handoff/SKILL.md": "sha",
+                    ".agents/skills/garden/SKILL.md": "sha",
+                },
+            )
+            wiki_name, skills = wiki_probe.load_expectations(repo)
+        self.assertEqual(wiki_name, "acme-notes")
+        self.assertEqual(skills, ("garden", "handoff"))
+
+    def test_missing_record_fails_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _docked_repo(tmp, None)
+            with self.assertRaisesRegex(
+                wiki_probe.ConfigError, "run wiki-dock install with --skills-dir"
+            ):
+                wiki_probe.load_expectations(repo)
+
+    def test_empty_record_fails_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _docked_repo(tmp, {})
+            with self.assertRaisesRegex(
+                wiki_probe.ConfigError, "records no rendered skills"
+            ):
+                wiki_probe.load_expectations(repo)
+
+
+class HarnessSelectionTest(unittest.TestCase):
+    """`all` means the supported harnesses this machine has; the skipped
+    ones are named, and an explicit --harness still fails on an absent
+    binary (run_harness reports it as not installed)."""
+
+    def run_main(self, harness: str, present: set[str]) -> tuple[int, str]:
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _docked_repo(
+                tmp, {".agents/skills/handoff/SKILL.md": "sha"}
+            )
+            with (
+                mock.patch.object(
+                    wiki_probe.shutil,
+                    "which",
+                    side_effect=lambda name: (
+                        f"/bin/{name}" if name in present else None
+                    ),
+                ),
+                mock.patch.object(wiki_probe, "probe", return_value=True),
+                contextlib.redirect_stdout(out),
+            ):
+                code = wiki_probe.main(
+                    ["--repo", str(repo), "--harness", harness]
+                )
+        return code, out.getvalue()
+
+    def test_all_skips_absent_harnesses_by_name(self) -> None:
+        code, out = self.run_main("all", {"claude", "codex"})
+        self.assertEqual(code, 0)
+        self.assertIn("SKIP pi - pi is not installed", out)
+        self.assertIn("SKIP opencode - opencode is not installed", out)
+        self.assertNotIn("SKIP claude-code", out)
+        self.assertIn("2/2 harness(es) passed", out)
+
+    def test_all_with_nothing_installed_fails(self) -> None:
+        code, out = self.run_main("all", set())
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count("SKIP "), len(wiki_probe.HARNESSES))
+
+    def test_explicit_harness_is_never_skipped(self) -> None:
+        code, out = self.run_main("pi", set())
+        self.assertEqual(code, 0)
+        self.assertNotIn("SKIP", out)
 
 
 if __name__ == "__main__":
