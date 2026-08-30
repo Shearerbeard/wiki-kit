@@ -11,4 +11,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-jsonschema \
     && rm -rf /var/lib/apt/lists/*
 
+# The kit checkout is bind-mounted read-only at this path and owned by
+# the host user, not the container's root; git refuses "dubious
+# ownership" without this, and the installer's kit stamp runs git there.
+RUN git config --system --add safe.directory /sources/wiki-kit
+
 WORKDIR /work
