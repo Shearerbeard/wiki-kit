@@ -338,8 +338,17 @@ def _target_workstream(
         return candidates[0]["name"], True
     if candidates:
         names = ", ".join(ws.get("name", "<unnamed>") for ws in candidates)
-        raise ValueError(f"multiple candidate_new workstreams found: {names}")
-    raise ValueError("no primary workstream found in event")
+        raise ValueError(
+            f"multiple candidate_new workstreams found: {names}; pass "
+            "--workstream <name> to choose one"
+        )
+    # The schema requires at least one proposal, so there is always a
+    # name to offer.
+    names = ", ".join(ws.get("name", "<unnamed>") for ws in proposed)
+    raise ValueError(
+        "event has no primary workstream route; pass --workstream "
+        f"<name> with one of its proposals: {names}"
+    )
 
 
 def _new_candidate_workstream(event: dict, name: str) -> str:

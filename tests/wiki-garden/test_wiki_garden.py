@@ -270,6 +270,26 @@ class WikiGardenTest(unittest.TestCase):
 
         self.assertEqual(self.garden_events(), [])
 
+    def test_no_route_error_names_the_workstream_flag(self) -> None:
+        self.write_workstream("test-ws")
+        event = make_event(
+            "test-ws",
+            proposed_workstreams=[
+                {
+                    "name": "test-ws",
+                    "relationship": "related",
+                    "proposed_action": "needs_review",
+                }
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, r"pass --workstream <name> .*test-ws"
+        ):
+            self.apply(event)
+
+        self.assertEqual(self.garden_events(), [])
+
     def test_event_with_workstream_state_appends_session_block(self) -> None:
         ws_file = self.write_workstream("test-ws")
         event = make_event("test-ws")
