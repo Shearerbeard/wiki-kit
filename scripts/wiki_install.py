@@ -22,7 +22,8 @@ The kit repo holds machinery; this installer wires a TARGET wiki repo
   also read - and merged into the wiki repo's `.claude/settings.json`.
 - scheduler units: rendered from the kit's templates (launchd on macOS,
   systemd user timers on Linux, skipped elsewhere; `--no-scheduler`
-  skips explicitly).
+  skips explicitly). Rendering never loads a unit: the render's
+  output, unit paths plus the load commands, is relayed verbatim.
 - orientation skeleton: an empty-state `CLAUDE.local.md` rendered
   through the real renderer, so carry-forward works from the first
   session (the blank-repo boot floor, charter decision 4).
@@ -97,8 +98,8 @@ def run(cmd: list[str], cwd: Path | None = None) -> str:
     return result.stdout
 
 
-def kit_cli(script: str, *args: str) -> None:
-    run([sys.executable, str(KIT_SCRIPTS / script), *args])
+def kit_cli(script: str, *args: str) -> str:
+    return run([sys.executable, str(KIT_SCRIPTS / script), *args])
 
 
 def ensure_git_repo(target: Path) -> None:
@@ -451,10 +452,10 @@ def install_scheduler(config: WikiConfig, skip: bool) -> None:
         return
     system = platform.system()
     if system == "Darwin":
-        kit_cli("render_scheduler.py", "--wiki", str(config.root))
+        rendered = kit_cli("render_scheduler.py", "--wiki", str(config.root))
         note("✓ scheduler units rendered from templates (launchd)")
     elif system == "Linux":
-        kit_cli(
+        rendered = kit_cli(
             "render_scheduler.py",
             "--wiki",
             str(config.root),
@@ -464,6 +465,11 @@ def install_scheduler(config: WikiConfig, skip: bool) -> None:
         note("✓ scheduler units rendered from templates (systemd user timers)")
     else:
         note(f"– scheduler skipped (no scheduler target for {system})")
+        return
+    # Rendering never loads a unit; the render names the unit files and
+    # the load commands, and that is the operator's only cue.
+    for line in rendered.rstrip().splitlines():
+        note(f"  {line}")
 
 
 def install(target: Path, no_scheduler: bool) -> None:

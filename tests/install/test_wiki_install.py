@@ -572,7 +572,8 @@ def test_install_scheduler_dispatches_systemd_on_linux(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     """The installer renders systemd user timers on Linux hosts; the
-    render invocation must carry the explicit target."""
+    render invocation must carry the explicit target, and the render's
+    own output (unit paths, load commands) reaches the operator."""
     import wiki_config
 
     target = tmp_path / "wiki"
@@ -583,9 +584,18 @@ def test_install_scheduler_dispatches_systemd_on_linux(
     config = wiki_config.load_config(target)
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(wiki_install.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(
-        wiki_install, "kit_cli", lambda script, *args: calls.append((script, *args))
+    render_output = (
+        "wrote /units/com.acme-notes.wiki-night-shift.timer\n\n"
+        "Rendering never loads units. To (re)load with systemd --user:\n"
+        "  systemctl --user daemon-reload\n"
+        "  systemctl --user enable --now com.acme-notes.wiki-night-shift.timer\n"
     )
+
+    def fake_kit_cli(script: str, *args: str) -> str:
+        calls.append((script, *args))
+        return render_output
+
+    monkeypatch.setattr(wiki_install, "kit_cli", fake_kit_cli)
 
     wiki_install.install_scheduler(config, skip=False)
 
@@ -598,7 +608,10 @@ def test_install_scheduler_dispatches_systemd_on_linux(
             "systemd",
         )
     ]
-    assert "systemd" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "systemd" in out
+    for line in render_output.rstrip().splitlines():
+        assert line in out
 
 
 def test_install_scheduler_skips_unknown_platforms(
@@ -614,9 +627,12 @@ def test_install_scheduler_skips_unknown_platforms(
     config = wiki_config.load_config(target)
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(wiki_install.platform, "system", lambda: "FreeBSD")
-    monkeypatch.setattr(
-        wiki_install, "kit_cli", lambda script, *args: calls.append((script, *args))
-    )
+
+    def fake_kit_cli(script: str, *args: str) -> str:
+        calls.append((script, *args))
+        return ""
+
+    monkeypatch.setattr(wiki_install, "kit_cli", fake_kit_cli)
 
     wiki_install.install_scheduler(config, skip=False)
 
