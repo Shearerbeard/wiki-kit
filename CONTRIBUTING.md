@@ -2,24 +2,13 @@
 
 ## Setup
 
-```sh
-uv sync
-```
-
 Python 3.12+, managed by uv; the only runtime dependency is
 `jsonschema`.
 
 ## Checks
 
-Run all of these before asking for review:
-
-```sh
-uv run pytest          # unit + integration; includes the
-                       # zero-source-strings sweep
-uv run ruff check .
-scripts/install-smoke/run.sh   # Docker end-to-end against a blank
-                               # fixture, offline
-```
+Before asking for review, run everything in `README.md`'s
+Development section.
 
 If you have the maintainer's Vale style pack symlinked into `.vale/`
 (see `.vale.ini`), run `vale` on every markdown file you touch.
@@ -41,6 +30,19 @@ check a message without committing:
 ```sh
 npx --yes -p @commitlint/cli commitlint --edit path/to/message.txt
 ```
+
+## CI
+
+Every push and pull request to `master` runs two jobs
+(`.github/workflows/ci.yml`):
+
+- `test`: `uv run ruff check .` and `uv run pytest -q`. On a
+  failure, open the failing step's log in the run page.
+- `install-smoke`: the Docker end-to-end install against a blank
+  fixture. It uploads an `install-smoke-report` artifact
+  (`latest.md`, `latest.json`, `latest.log`) - read `latest.md`
+  first, then `latest.log`. If the artifact is absent, the job
+  failed before a report was written: read the job log.
 
 ## House rules
 

@@ -1,11 +1,7 @@
 # AGENTS.md
 
-wiki-kit is generic wiki machinery, installable into any content repo:
-an append-only event store with schema-registry validation,
-deterministic projections, garden and night pipelines, a working-tree
-doctor, and an installer that wires the mechanical enforcement in.
-This repo holds machinery only - a deployment (a "wiki repo") holds
-content plus its config pair.
+wiki-kit is generic wiki machinery, installable into any content
+repo; `README.md` says what it is and how the pieces fit.
 
 ## Read order
 
@@ -18,12 +14,7 @@ session on a fresh deployment: `docs/QUICKSTART.md`.
 
 ## Dev commands
 
-```sh
-uv sync
-uv run pytest          # includes the zero-source-strings sweep
-uv run ruff check .
-scripts/install-smoke/run.sh   # Docker end-to-end, offline
-```
+The dev commands live in `README.md`'s Development section.
 
 ## Repo boundary
 

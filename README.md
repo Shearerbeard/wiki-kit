@@ -4,7 +4,7 @@ Generic wiki machinery, installable into any content repo: an
 append-only event store with schema-registry validation, deterministic
 projections, garden and night pipelines, a working-tree doctor, and an
 installer that wires the mechanical enforcement in. The guiding line:
-afraid of remembering the wrong thing. Events are append-only,
+"afraid of remembering the wrong thing." Events are append-only,
 dispositions are join-derived, curation is gated.
 
 The kit repo holds machinery only. A deployment (a "wiki repo") holds
@@ -87,9 +87,10 @@ tables with their machine paths in the overlay.
 
 ```sh
 uv sync
-uv run pytest       # includes the zero-source-strings sweep
+uv run pytest       # unit + integration; includes the
+                    # zero-source-strings sweep
 uv run ruff check .
-scripts/install-smoke/run.sh   # Docker end-to-end
+scripts/install-smoke/run.sh   # Docker end-to-end, offline
 ```
 
 ## Provenance
