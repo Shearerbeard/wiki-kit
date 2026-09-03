@@ -356,7 +356,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = resolve_wiki_root(args.wiki)
         config = load_config(root)
-        family_dirs = config.triage_project_dirs()
+        family_dirs = list(config.triage_project_dirs())
+        # The wiki's own slug enters the set implicitly, not by curation,
+        # and a harness only creates that memory dir once a session has
+        # run at the wiki root. Absent means nothing to triage there yet;
+        # every curated dir still fails loud when missing.
+        root_slug = config.project_slug(root)
+        skipped_root = not memory_dir(args.projects_root, root_slug).is_dir()
+        if skipped_root:
+            family_dirs.remove(root_slug)
         events_dir = (
             args.events_dir if args.events_dir is not None else root / "wiki" / "events"
         )
@@ -370,14 +378,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.json:
-        print(
-            json.dumps(
-                {"baseline": baseline, "manifest": manifest_rows(entries)},
-                indent=2,
-            )
-        )
+        payload: dict[str, Any] = {
+            "baseline": baseline,
+            "manifest": manifest_rows(entries),
+        }
+        if skipped_root:
+            payload["skipped"] = [root_slug]
+        print(json.dumps(payload, indent=2))
     else:
         print(summarize(entries, baseline))
+        if skipped_root:
+            print(f"(no harness memory dir for the wiki root {root_slug}; skipped)")
     return 0
 
 

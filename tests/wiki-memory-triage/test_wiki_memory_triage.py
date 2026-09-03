@@ -372,6 +372,44 @@ class MainTests(unittest.TestCase):
             names = [row["filename"] for row in payload["manifest"]]
             self.assertEqual(names, ["project-new.md"])
 
+    def test_absent_root_memory_dir_is_skipped_not_fatal(self):
+        # The wiki's own slug is implicit in the triage set; a harness
+        # creates that memory dir only once a session has run at the
+        # wiki root, so a fresh deployment has none.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = write_wiki(Path(tmp) / "acme-notes", extra_dirs=["projA"])
+            projects_root = Path(tmp) / "projects"
+            write_memory_file(wmt.memory_dir(projects_root, "projA"), "project-y.md")
+            code, stdout = self._run(
+                [
+                    "scan",
+                    "--json",
+                    "--wiki",
+                    str(root),
+                    "--projects-root",
+                    str(projects_root),
+                ]
+            )
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(
+                payload["skipped"], [load_config(root).project_slug(root)]
+            )
+            self.assertEqual(
+                [row["filename"] for row in payload["manifest"]], ["project-y.md"]
+            )
+
+    def test_absent_curated_memory_dir_still_fails_loud(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, projects_root = self._fixture(Path(tmp))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code, _ = self._run(
+                    ["scan", "--wiki", str(root), "--projects-root", str(projects_root)]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("memory dir missing", err.getvalue())
+
     def test_since_garden_no_baseline_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, projects_root = self._fixture(Path(tmp))

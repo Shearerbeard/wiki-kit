@@ -1441,6 +1441,47 @@ class PendingMismatchTest(CliHarness):
             self.assertEqual(self.mismatches(root), [])
 
 
+class ConventionalStoreProjectionTest(CliHarness):
+    """A store at <root>/wiki/events is written with repo-relative event
+    paths; every library-side rebuild must stamp the same way, or the
+    night runner and the doctor disagree about one projection."""
+
+    def create_conventional_store(self, root: Path) -> Path:
+        events_dir = root / "wiki" / "events"
+        self.create_event(events_dir)
+        return events_dir
+
+    def test_verified_loader_accepts_cli_written_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_dir = self.create_conventional_store(Path(tmp).resolve())
+            index = wiki_event.load_verified_pending_index(events_dir)
+            self.assertEqual(index["event_count"], 1)
+            self.assertFalse(Path(index["events"][0]["event_path"]).is_absolute())
+
+    def test_verified_loader_and_mismatch_check_agree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            events_dir = self.create_conventional_store(root)
+            self.assertEqual(
+                wiki_event.pending_mismatch(
+                    events_dir,
+                    root / "wiki" / "sources",
+                    root / "wiki" / "pending" / "index.json",
+                    root / "wiki" / "pending" / "latest.md",
+                ),
+                [],
+            )
+            wiki_event.load_verified_pending_index(events_dir)
+
+    def test_rebuild_restores_the_callers_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            events_dir = self.create_conventional_store(root)
+            self.assertIsNone(wiki_event._wiki_root)
+            wiki_event.rebuild_pending_index(events_dir, root / "wiki" / "sources")
+            self.assertIsNone(wiki_event._wiki_root)
+
+
 class WikiRootResolutionTest(CliHarness):
     """--wiki resolution: content-path defaults derive from the resolved
     root; failure outside a wiki is a clear error naming the flag."""

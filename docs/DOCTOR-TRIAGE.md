@@ -68,6 +68,11 @@ rebuilt from events and sources and compared.
 
 - FAIL "<mismatch>; run the pending builder": run
   `wiki-event.py build-pending`.
+- The night runner verifies the same projection before it applies
+  anything, through the same rebuild; a night report that aborts on
+  "pending projection differs from the event store" while this check
+  passes means the two rebuilds disagree, which is a kit defect, not
+  content drift.
 
 ## token-budgets
 

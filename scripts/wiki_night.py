@@ -60,6 +60,7 @@ from wiki_event import (  # noqa: E402
     HandoffStatus,
     default_pending_dir,
     load_verified_pending_index,
+    set_wiki_root,
     utc_timestamp,
 )
 from wiki_garden import (  # noqa: E402
@@ -666,7 +667,9 @@ class NightRunner:
         if unexpected:
             return "", "unexpected concurrent changes:\n" + "\n".join(unexpected)
 
-        paths = sorted(str(path) for path in self._touched_paths)
+        paths = sorted(
+            str(path) for path in self._touched_paths - self._machine_local_paths()
+        )
         add_result = subprocess.run(
             ["git", "add", "--force", "--", *paths],
             capture_output=True,
@@ -899,6 +902,16 @@ class NightRunner:
         paths = self._git_paths(
             "ls-files", "--cached", "--others", "--exclude-standard"
         )
+        # The runner's own write set is baselined whether or not git
+        # ignores it: a deployment that ignores its orientation file still
+        # has the runner regenerate it, and the before-write guard needs
+        # the starting fingerprint to tell a concurrent writer from the
+        # file simply existing.
+        paths |= {
+            Path(relative)
+            for relative in GENERATED_INGRESS
+            if self._path_exists(self.root / relative)
+        }
         gitlinks = self._gitlink_paths()
         self._baseline_fingerprints = {
             path: self._fingerprint(self.root / path)
@@ -953,6 +966,37 @@ class NightRunner:
         if result.returncode != 0:
             raise RuntimeError(f"git status failed: {result.stderr.strip()}")
         return {Path(line[3:]) for line in result.stdout.splitlines() if len(line) >= 4}
+
+    def _machine_local_paths(self) -> set[Path]:
+        """The orientation file is the one generated surface a deployment
+        keeps out of git (the enforcement contract's untracked surface);
+        where it is untracked and ignored the runner regenerates it in
+        place and leaves it out of the commit. Every other touched path
+        is commit content, ignore rules or not - the night report is
+        force-added by design."""
+        orientation = Path("CLAUDE.local.md")
+        if orientation not in self._touched_paths or self._is_tracked(orientation):
+            return set()
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--", str(orientation)],
+            capture_output=True,
+            cwd=self.root,
+        )
+        # Exit 1 means no ignore rule matched; anything else is a real
+        # failure.
+        if result.returncode not in (0, 1):
+            raise RuntimeError(
+                f"git check-ignore failed: {result.stderr.decode().strip()}"
+            )
+        return {orientation} if result.returncode == 0 else set()
+
+    def _is_tracked(self, path: Path) -> bool:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
+            capture_output=True,
+            cwd=self.root,
+        )
+        return result.returncode == 0
 
     def _verify_staged_manifest(self) -> set[Path]:
         staged = self._git_paths("diff", "--cached", "--name-only")
@@ -1228,10 +1272,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        config = load_config(resolve_wiki_root(args.wiki))
+        root = resolve_wiki_root(args.wiki)
+        config = load_config(root)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    set_wiki_root(root)
     runner = NightRunner(
         config,
         dry_run=args.dry_run,

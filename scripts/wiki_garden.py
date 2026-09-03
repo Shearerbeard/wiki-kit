@@ -24,12 +24,13 @@ from wiki_event import (  # noqa: E402
     GardenApplyStatus,
     ValidationError,
     WorkstreamRelationship,
-    build_pending_index,
     default_pending_dir,
     default_sources_dir,
     event_path,
     event_repo,
     load_events,
+    rebuild_pending_index,
+    set_wiki_root,
     uuid7,
     validate_event,
     validate_garden_apply_event,
@@ -267,8 +268,7 @@ def _apply_with_workstream_state(
     garden_event_path = event_path(events_dir, garden_event)
     try:
         write_event(events_dir, garden_event)
-        events = load_events(events_dir)
-        index = build_pending_index(events, default_sources_dir(events_dir))
+        index = rebuild_pending_index(events_dir, default_sources_dir(events_dir))
         write_pending_files(default_pending_dir(events_dir), index)
     except BaseException as exc:
         if not garden_event_path.exists():
@@ -497,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         root = resolve_wiki_root(args.wiki)
+        set_wiki_root(root)
         event = json.loads(args.event.read_text())
         result = apply_event(
             event, repo_root=root, force=args.force, workstream=args.workstream

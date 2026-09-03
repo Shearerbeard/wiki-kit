@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1265,22 +1267,7 @@ def pending_mismatch(
     neutralized index. A missing or unparseable projection file is a
     mismatch; a broken STORE (invalid events) raises instead — corruption
     is not staleness."""
-    global _wiki_root
-    prior = _wiki_root
-    # Pin the root to the tree that owns the store when the store sits at
-    # the conventional <root>/wiki/events: the CLI writes repo-relative
-    # event paths into the index, so an unpinned rebuild would stamp
-    # absolute paths and report every non-empty pending store as drifted.
-    # A non-conventional layout (library callers on bare tmp trees) keeps
-    # the caller's own pin state; the prior pin is restored afterwards.
-    derived = conventional_store_root(events_dir)
-    if derived is not None:
-        set_wiki_root(derived)
-    try:
-        events = load_events(events_dir)
-        expected = build_pending_index(events, sources_dir)
-    finally:
-        _wiki_root = prior
+    expected = rebuild_pending_index(events_dir, sources_dir)
     mismatches: list[str] = []
     current = None
     try:
@@ -1488,7 +1475,7 @@ def load_verified_pending_index(
     index_path = resolved_pending_dir / PENDING_INDEX_FILE_NAME
     current = load_json(index_path)
     validate_artifact(current, "pending-index.schema.json", str(index_path))
-    expected = build_pending_index(load_events(events_dir), resolved_sources_dir)
+    expected = rebuild_pending_index(events_dir, resolved_sources_dir)
     expected["generated_at_utc"] = current["generated_at_utc"]
     if current != expected:
         raise ValidationError(
@@ -1981,6 +1968,35 @@ def conventional_store_root(events_dir: Path) -> Path | None:
     return None
 
 
+@contextmanager
+def store_root_pinned(events_dir: Path) -> Iterator[None]:
+    """Pin stored-path resolution to the store's conventional root for the
+    duration of a projection rebuild, restoring the caller's pin after.
+
+    The event CLI writes repo-relative event paths into the pending
+    index, so a rebuild that stamps absolute paths reports every
+    non-empty pending store as drifted (and, written back, produces an
+    index the hook and doctor reject). A non-conventional layout derives
+    nothing and keeps the caller's own pin state."""
+    global _wiki_root
+    prior = _wiki_root
+    derived = conventional_store_root(events_dir)
+    if derived is not None:
+        set_wiki_root(derived)
+    try:
+        yield
+    finally:
+        _wiki_root = prior
+
+
+def rebuild_pending_index(events_dir: Path, sources_dir: Path) -> dict[str, Any]:
+    """The pending index the store implies, stamped the way the CLI stamps
+    it. Every library-side rebuild (doctor, hook, night runner, garden)
+    goes through here so all of them agree with the written projection."""
+    with store_root_pinned(events_dir):
+        return build_pending_index(load_events(events_dir), sources_dir)
+
+
 def _wiki_root_for(args: argparse.Namespace) -> Path:
     """Resolve the wiki root once per invocation and pin stored-path
     resolution (repo_relative/stored_path) to it."""
@@ -2006,8 +2022,8 @@ def _apply_content_defaults(args: argparse.Namespace) -> None:
         args.sources_dir = _wiki_root_for(args) / "wiki" / "sources"
     # A fully-explicit invocation never resolves wiki.toml, but a store at
     # the conventional layout still pins its root so written projections
-    # carry repo-relative paths - the same derivation pending_mismatch
-    # applies on the checking side.
+    # carry repo-relative paths - the same derivation store_root_pinned
+    # applies around every library-side rebuild.
     if _wiki_root is None:
         events_dir = getattr(args, "events_dir", None)
         if isinstance(events_dir, Path):

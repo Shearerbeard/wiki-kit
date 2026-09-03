@@ -890,6 +890,92 @@ class NightRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "runner baseline"):
             runner._assert_unchanged_before_write(path)
 
+    def test_ignored_orientation_file_is_baselined_and_not_committed(self) -> None:
+        # The kit installer gitignores CLAUDE.local.md (it embeds machine
+        # paths). The runner still regenerates it, so the before-write
+        # guard needs its starting fingerprint, and the night commit must
+        # leave it out of the tree.
+        self._init_git_repo()
+        orientation = self.root / "CLAUDE.local.md"
+        orientation.write_text("# orientation\n")
+        (self.root / ".gitignore").write_text("CLAUDE.local.md\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "ignore orientation"],
+            cwd=self.root,
+            check=True,
+        )
+        runner = self._make_runner(scheduled=True)
+        runner._capture_baseline()
+        self.assertIn(Path("CLAUDE.local.md"), runner._baseline_fingerprints)
+        runner._assert_unchanged_before_write(orientation)
+
+        orientation.write_text("# orientation, regenerated\n")
+        runner._touch(orientation)
+        runner.report.outcome = wiki_night.RunOutcome.CLEAN
+        runner._write_report()
+        _output, error = runner._commit()
+        self.assertEqual(error, "")
+        committed = subprocess.run(
+            ["git", "show", "--name-only", "--format=", "HEAD"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        self.assertNotIn("CLAUDE.local.md", committed)
+        self.assertIn(str(runner.report_path.relative_to(self.root)), committed)
+
+    def test_tracked_orientation_file_is_committed(self) -> None:
+        # A deployment that tracks CLAUDE.local.md (the pre-kit ancestor
+        # does) keeps committing the regenerated file.
+        self._init_git_repo()
+        orientation = self.root / "CLAUDE.local.md"
+        orientation.write_text("# orientation\n")
+        subprocess.run(["git", "add", "CLAUDE.local.md"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "track orientation"],
+            cwd=self.root,
+            check=True,
+        )
+        runner = self._make_runner(scheduled=True)
+        runner._capture_baseline()
+        orientation.write_text("# orientation, regenerated\n")
+        runner._touch(orientation)
+        runner.report.outcome = wiki_night.RunOutcome.CLEAN
+        runner._write_report()
+        _output, error = runner._commit()
+        self.assertEqual(error, "")
+        committed = subprocess.run(
+            ["git", "show", "--name-only", "--format=", "HEAD"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        self.assertIn("CLAUDE.local.md", committed)
+
+    def test_count_pending_reads_the_cli_written_projection(self) -> None:
+        # The projection on disk is what the event CLI wrote (repo-relative
+        # paths); the runner's verified load must accept it rather than
+        # rebuilding with a different path base.
+        _write_real_pending_handoff(self.root / "wiki" / "events")
+        build = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "wiki_event.py"),
+                "build-pending",
+                "--wiki",
+                str(self.root),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=self.root,
+        )
+        self.assertEqual(build.returncode, 0, build.stderr)
+        runner = self._make_runner()
+        self.assertEqual(runner._count_pending(), 1)
+
     def test_capture_baseline_ignores_gitlink(self) -> None:
         self._init_git_repo()
         gitlink = self.root / "nested-reports"

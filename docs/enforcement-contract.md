@@ -22,7 +22,7 @@ none carries a private copy. The kit's `DEFAULT_CONTRACT` constant in
 | `wiki/quarantine.json` | curated correction ledger (mutable by design) | artifact schema validation when staged; deny rules block casual tool edits |
 | `wiki/log-epoch.json` | immutable-by-convention boundary marker (optional) | artifact schema validation when staged; deny rules |
 | `wiki/sources/**` | content-addressed captures | write-time sha256 manifest; periodic doctor audit (`captures` check) re-hashes every committed capture |
-| `CLAUDE.local.md` | generated orientation projection (gitignored) | deny rules only; no git hook can apply to an untracked file |
+| `CLAUDE.local.md` | generated orientation projection (gitignored) | deny rules only; no git hook can apply to an untracked file. The night runner regenerates it in place and keeps it out of the night commit wherever the deployment ignores it |
 | `workstreams/**/*.md` | curated working state | pre-commit runs the workstream validator over the staged tree; recursive, `_archive/` included, `_reference/` and `index.md` excluded (the exclusion lives in the validator once) |
 | `wiki/entities/*.md` | curated working state | convention plus doctor budgets and link checks; no write protection |
 | `wiki/index.md` | curated content catalog, optional | none by design: writable working state with no generated or protected role; the doctor's link check includes it when present |

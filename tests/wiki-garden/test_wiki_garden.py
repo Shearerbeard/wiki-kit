@@ -15,6 +15,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.wiki_event import pending_mismatch, write_event  # noqa: E402
 from scripts.wiki_garden import (  # noqa: E402
     SESSION_UPDATES_HEADING,
     AlreadyDispositioned,
@@ -588,6 +589,36 @@ class WikiGardenTest(unittest.TestCase):
             e for e in self.garden_events() if e.get("event_type") == "garden-apply"
         ]
         self.assertEqual(applied, [])
+
+    def test_apply_leaves_a_projection_the_doctor_accepts(self) -> None:
+        # The store sits at the conventional <root>/wiki/events layout, so
+        # the rebuilt index must carry repo-relative paths for the event
+        # that stays pending - the doctor and the hook compare against
+        # exactly that.
+        self.write_workstream("test-ws")
+        applied = make_event("test-ws", event_id="019e9a42-641a-7b85-884e-8bbc83acfa87")
+        still_pending = make_event(
+            "test-ws", event_id="019e9a42-641a-7b85-884e-8bbc83acfa88"
+        )
+        write_event(self.events_dir, applied)
+        write_event(self.events_dir, still_pending)
+        self.apply(applied)
+        pending_dir = self.events_dir.parent / "pending"
+        index = json.loads((pending_dir / "index.json").read_text())
+        self.assertEqual(
+            [entry["event_id"] for entry in index["events"]],
+            [still_pending["event_id"]],
+        )
+        self.assertFalse(Path(index["events"][0]["event_path"]).is_absolute())
+        self.assertEqual(
+            pending_mismatch(
+                self.events_dir,
+                self.events_dir.parent / "sources",
+                pending_dir / "index.json",
+                pending_dir / "latest.md",
+            ),
+            [],
+        )
 
     def test_apply_stands_when_pending_rebuild_fails(self) -> None:
         # Sabotage the pending rebuild only: the pending path exists as a
