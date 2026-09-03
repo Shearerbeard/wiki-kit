@@ -45,13 +45,14 @@ import platform
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 KIT_SCRIPTS = Path(__file__).resolve().parent
 KIT_ROOT = KIT_SCRIPTS.parent
 if str(KIT_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(KIT_SCRIPTS))
 
+from render_scheduler import SCHEDULER_LOG_SUBPATH  # noqa: E402
 from wiki_config import (  # noqa: E402
     CONFIG_FILE_NAME,
     CONTRACT_VERSION,
@@ -67,7 +68,7 @@ from wiki_config import (  # noqa: E402
 )
 
 ORIENTATION_TEMPLATE = KIT_ROOT / "templates" / "orientation-quickstart.md"
-GITIGNORE_LINES = ("CLAUDE.local.md", OVERLAY_FILE_NAME)
+MACHINE_LOCAL_IGNORE_LINES = ("CLAUDE.local.md", OVERLAY_FILE_NAME)
 SKELETON_DIRS = ("wiki/events", "wiki/sources", "wiki/entities", "workstreams")
 EMPTY_QUARANTINE = {
     "schema_version": 1,
@@ -194,7 +195,9 @@ def stamp_kit(target: Path, written: list[Path]) -> None:
         if section.group(0).strip() == block.strip():
             note("✓ kit stamp up to date")
             return
-        new_text = text[: section.start()] + block + "\n" + text[section.end():]
+        trailer = text[section.end() :]
+        separated = "\n" + trailer if trailer.strip() else ""
+        new_text = text[: section.start()] + block + separated
     path.write_text(new_text, encoding="utf-8")
     if path not in written:
         written.append(path)
@@ -276,11 +279,28 @@ def seed_file(path: Path, content: str, label: str, written: list[Path]) -> None
     note(f"✓ {label} written")
 
 
-def ensure_gitignore(target: Path, written: list[Path]) -> None:
+def gitignore_lines(config: WikiConfig) -> tuple[str, ...]:
+    """The machine-local files plus the runtime output the scheduler and
+    the night runner produce in place: unit stdout/stderr, and every
+    report shape the runner writes. Without the second group a deployment
+    dirties its own tree after the first night and the next run's
+    preflight aborts on it. The scheduled report is ignored by the same
+    pattern and force-added by the runner's commit on purpose."""
+    report_dir = PurePosixPath(config.night.report_dir).as_posix()
+    return (
+        *MACHINE_LOCAL_IGNORE_LINES,
+        f"{SCHEDULER_LOG_SUBPATH}/",
+        f"{report_dir}/*.md",
+        f"{report_dir}/*.log",
+        f"{report_dir}/gh-sweep-*.json",
+    )
+
+
+def ensure_gitignore(target: Path, config: WikiConfig, written: list[Path]) -> None:
     path = target / ".gitignore"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = existing.splitlines()
-    missing = [line for line in GITIGNORE_LINES if line not in lines]
+    missing = [line for line in gitignore_lines(config) if line not in lines]
     if not missing:
         note("✓ .gitignore already covers the machine-local files")
         return
@@ -489,7 +509,6 @@ def install(target: Path, no_scheduler: bool) -> None:
         CONFIG_FILE_NAME,
         written,
     )
-    ensure_gitignore(target, written)
     ensure_skeleton(target, written)
     seed_file(
         target / "wiki" / "quarantine.json",
@@ -498,6 +517,7 @@ def install(target: Path, no_scheduler: bool) -> None:
         written,
     )
     config = load_config(target)
+    ensure_gitignore(target, config, written)
     stamp_kit(target, written)
     ensure_kit_path(target, written)
     install_hook(target)

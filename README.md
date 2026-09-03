@@ -24,7 +24,9 @@ and names the fix.
 Works on a blank directory, an existing git repo, or a directory that
 already carries docs and an Obsidian vault (pre-existing content is
 never touched). The installer seeds `wiki.toml`, the content skeleton,
-the projections, an orientation skeleton, and the pre-commit hook; on a
+the projections, an orientation skeleton, the pre-commit hook, and the
+`.gitignore` lines for the machine-local files and the runtime output
+the scheduler and night runner write (unit logs, night reports); on a
 repo with no commits it creates an initial commit of exactly the files
 it wrote. Reinstalling is idempotent. It also renders scheduler units
 for the night, morning, and garden-reminder jobs: launchd units on

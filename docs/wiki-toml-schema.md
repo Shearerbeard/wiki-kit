@@ -172,6 +172,9 @@ garden_reminder = "16:00"
 [night]
 # Knob 15: the report-path and commit-message conventions
 # morning-reminder.sh re-derives independently today. One source here.
+# The installer derives the .gitignore lines for the runner's output
+# (`<report_dir>/*.md`, `*.log`, `gh-sweep-*.json`) from this value;
+# the scheduled report is force-added by the night commit regardless.
 report_dir = "reports/night"
 commit_prefix = "night:"
 

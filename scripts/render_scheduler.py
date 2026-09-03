@@ -41,6 +41,8 @@ from wiki_config import (
     resolve_wiki_root,
 )
 
+SCHEDULER_LOG_SUBPATH = "reports/scheduler-logs"
+
 
 class Target(NamedTuple):
     template_dir: Path
@@ -161,7 +163,7 @@ def render_units(config: WikiConfig, target_name: str) -> list[tuple[str, str]]:
         "notifier": _resolve_tool(config, "notifier", target.notifier_default),
         "git": _resolve_tool(config, "git", "git"),
     }
-    log_dir = config.root / "reports" / "scheduler-logs"
+    log_dir = config.root / SCHEDULER_LOG_SUBPATH
     log_dir.mkdir(parents=True, exist_ok=True)
     if target_name == "systemd" and any(char.isspace() for char in str(config.root)):
         # Quoting is verified only for ExecStart=; WorkingDirectory= and

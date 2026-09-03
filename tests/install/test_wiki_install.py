@@ -42,6 +42,12 @@ def test_blank_repo_boot(tmp_path: Path) -> None:
     gitignore = (target / ".gitignore").read_text()
     assert "wiki.local.toml" in gitignore
     assert "CLAUDE.local.md" in gitignore
+    # Runtime output the scheduler and the night runner write in place
+    # must not dirty the tree, or the next night's preflight aborts.
+    assert "reports/scheduler-logs/" in gitignore
+    assert "reports/night/*.md" in gitignore
+    assert "reports/night/*.log" in gitignore
+    assert "reports/night/gh-sweep-*.json" in gitignore
 
     # The boot floor (charter decision 4): initial commit, projections,
     # orientation skeleton with an empty-state Quickstart.
@@ -102,6 +108,68 @@ def test_reinstall_is_idempotent(tmp_path: Path) -> None:
         if path.is_file() and ".git" not in path.parts
     }
     assert before == after
+
+
+def test_night_output_is_ignored_after_install(tmp_path: Path) -> None:
+    target = tmp_path / "blank-wiki"
+    assert run_install(target).returncode == 0
+    for relative in (
+        "reports/scheduler-logs/night-shift-stdout.log",
+        "reports/night/2026-01-01.md",
+        "reports/night/2026-01-01-dry-run.md",
+        "reports/night/gh-sweep-2026-01-01.json",
+    ):
+        path = target / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("runtime output\n")
+    assert git(target, "status", "--short").strip() == ""
+
+
+def test_ignore_lines_follow_the_configured_report_dir(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(
+        '[wiki]\nname = "wiki"\n\n[contract]\nprotected = ["wiki/log.md"]\n\n'
+        '[night]\nreport_dir = "journal/nightly"\n'
+    )
+    assert run_install(target).returncode == 0
+    gitignore = (target / ".gitignore").read_text()
+    assert "journal/nightly/*.md" in gitignore
+    assert "reports/night/*.md" not in gitignore
+
+
+def test_hand_added_ignore_lines_are_not_duplicated(tmp_path: Path) -> None:
+    # A deployment patched by hand before the installer seeded these
+    # lines must come out with each line exactly once and the rest
+    # appended.
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / ".gitignore").write_text(
+        "CLAUDE.local.md\nwiki.local.toml\nreports/night/*.md\n"
+    )
+    assert run_install(target).returncode == 0
+    lines = (target / ".gitignore").read_text().splitlines()
+    assert lines.count("reports/night/*.md") == 1
+    assert lines.count("CLAUDE.local.md") == 1
+    assert "reports/scheduler-logs/" in lines
+    assert "reports/night/gh-sweep-*.json" in lines
+    assert len(lines) == len(set(lines))
+
+
+def test_report_dir_trailing_slash_yields_matching_patterns(tmp_path: Path) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(
+        '[wiki]\nname = "wiki"\n\n[contract]\nprotected = ["wiki/log.md"]\n\n'
+        '[night]\nreport_dir = "reports/night/"\n'
+    )
+    assert run_install(target).returncode == 0
+    gitignore = (target / ".gitignore").read_text()
+    assert "reports/night/*.md" in gitignore
+    assert "//" not in gitignore
+    (target / "reports" / "night").mkdir(parents=True)
+    (target / "reports" / "night" / "run.md").write_text("report\n")
+    assert git(target, "status", "--short").strip() == ""
 
 
 def test_install_around_existing_content(tmp_path: Path) -> None:
@@ -478,6 +546,21 @@ def test_stamp_replaces_a_stale_section_in_place(tmp_path: Path) -> None:
     assert f'commit = "{head}"' in text
     # The section after the replaced one survives untouched.
     assert 'night = "04:00"' in text
+
+
+def test_stamp_at_end_of_file_does_not_grow_a_trailing_blank_line(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "wiki"
+    target.mkdir()
+    (target / "wiki.toml").write_text(
+        '[wiki]\nname = "wiki"\n\n[contract]\nprotected = ["wiki/log.md"]\n\n'
+        '[kit]\ncontract_version = 0\ncommit = "stale"\n'
+    )
+    assert run_install(target).returncode == 0
+    text = (target / "wiki.toml").read_text()
+    assert text.endswith('"\n')
+    assert not text.endswith("\n\n")
 
 
 def test_overlay_kit_update_preserves_other_tools(tmp_path: Path) -> None:
