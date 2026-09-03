@@ -133,9 +133,12 @@ fresh clone of a committed-posture consumer re-runs the same install
 command to recreate the machine-local files (overlay, orientation,
 skills); the tracked manifest proves identity. An incomplete dock
 (manifest without overlay, the normal state of a linked worktree) is
-completed by `wiki-dock.py complete`, the command the resolver's error
-message names.
+completed by `wiki-dock.py complete --wiki /path/to/wiki --repo .`, the
+command the resolver's error message names; `complete` re-renders the
+orientation from the dock's render record but renders no skills.
 
 What a consumer session reads at cold start: `AGENTS.md` (or the
 `CLAUDE.md` shim) points at `.wiki/orientation.md`, which names the
-wiki root, the rendered skills, and the commands a session needs.
+wiki root, the rendered skills (from the dock's render record, so a
+foreign file left in place is not listed), the wiki paths a session
+never hand-edits, and the commands a session needs.

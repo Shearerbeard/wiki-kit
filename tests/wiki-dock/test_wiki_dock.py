@@ -359,12 +359,24 @@ class OnboardingWiringTest(DockCase):
         self.assertIn(".agents/skills/", orientation)
         self.assertIn(f"uv run --project {KIT_ROOT}", orientation)
         self.assertNotIn("{{", orientation)
+        # A cold session answers "what is rendered here" and "what must I
+        # never edit" from this file alone: every contracted skill name
+        # and every protected path is spelled out.
+        for skill in ("garden", "handoff", "morning", "session-feedback"):
+            self.assertIn(f"`{skill}`", orientation)
+        for protected in ("wiki/log.md", "CLAUDE.local.md"):
+            self.assertIn(f"`{protected}`", orientation)
 
         agents = (repo / "AGENTS.md").read_text()
         self.assertIn(wiki_dock.DOCK_BLOCK_START, agents)
         self.assertIn(wiki_dock.DOCK_BLOCK_END, agents)
         self.assertIn("acme-notes", agents)
         self.assertIn(".wiki/orientation.md", agents)
+        # The block tells a checkout that lacks the per-checkout wiring
+        # how to restore it: install again for a fresh clone, complete
+        # for a linked worktree.
+        self.assertIn("wiki-dock.py install", agents)
+        self.assertIn("wiki-dock.py complete", agents)
 
         claude = (repo / "CLAUDE.md").read_text()
         self.assertIn("# CLAUDE.md", claude)
@@ -793,6 +805,13 @@ class SkillRenderTest(DockCase):
         self.assertIn("no provenance entry", out)
         self.assertIn("left in place", out)
         self.assertEqual((dest_dir / "SKILL.md").read_text(), foreign)
+        # The orientation lists what the render record vouches for, so
+        # the foreign garden is absent while the other three are named.
+        orientation = (repo / ".wiki" / "orientation.md").read_text()
+        skills_section = orientation.split("## Project skills")[1].split("##")[0]
+        self.assertNotIn("`garden`", skills_section)
+        for skill in ("handoff", "morning", "session-feedback"):
+            self.assertIn(f"`{skill}`", skills_section)
 
     def test_missing_manifest_entry_on_older_render_is_loud(self) -> None:
         """A rendered-looking skill with no valid manifest entry gets a

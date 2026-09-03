@@ -20,6 +20,20 @@ content.
 
 {{SKILL_DIRS}}
 
+## Never hand-edit in the wiki
+
+A session changes these wiki paths only through the kit CLIs (the event
+CLI for events and corrections, the renderers for projections, the
+doctor to check). The wiki's pre-commit hook rejects most direct edits at
+commit time and the wiki's own Claude Code settings deny its edit tools;
+nothing stops a shell write or another harness, so this list is the
+rule, not the mechanism:
+
+{{PROTECTED_PATHS}}
+
+What each path is and exactly which layer guards it: the kit's
+`docs/enforcement-contract.md`.
+
 ## Commands a session needs
 
 ```sh

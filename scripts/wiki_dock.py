@@ -547,15 +547,24 @@ def prepare_orientation(
     companion: str,
     wiki_root: Path,
     kit_root: str,
-    skill_dirs: tuple[str, ...],
+    skill_renders: dict[str, tuple[str, ...]],
+    protected: tuple[str, ...],
 ) -> str:
-    """Render the orientation text in preflight, before any dock write,
-    so a template bug fails loud with nothing half-applied."""
-    listing = "\n".join(f"- `{directory}/`" for directory in skill_dirs)
+    """Render the orientation text. `skill_renders` maps each skills
+    directory to the skill names the kit's render record vouches for
+    there, so a cold session reading this file learns what is really
+    rendered (a foreign file left in place is not listed) and what the
+    wiki's deny rules keep it from editing."""
+    listing = "\n".join(
+        f"- `{directory}/`: " + ", ".join(f"`{name}`" for name in names)
+        for directory, names in sorted(skill_renders.items())
+        if names
+    )
     if not listing:
         listing = (
             "- none rendered; reinstall with --skills-dir to add them"
         )
+    never_edit = "\n".join(f"- `{path}`" for path in protected)
     return render_template(
         ORIENTATION_TEMPLATE,
         {
@@ -564,6 +573,7 @@ def prepare_orientation(
             "WIKI_ROOT": str(wiki_root),
             "KIT_ROOT": kit_root,
             "SKILL_DIRS": listing,
+            "PROTECTED_PATHS": never_edit,
         },
     )
 
@@ -578,15 +588,22 @@ def write_orientation(dock_dir: Path, content: str) -> None:
     note(f"✓ orientation written to {path}")
 
 
-def recorded_skill_dirs(dock_dir: Path) -> tuple[str, ...]:
-    """The skill dirs the dock's provenance manifest records, for the
-    complete command's orientation re-render (complete does not take
-    --skills-dir; the manifest is the record of where install put them)."""
+def recorded_skill_renders(dock_dir: Path) -> dict[str, tuple[str, ...]]:
+    """Skills directory -> skill names, from the dock's provenance
+    manifest: the record of what install actually wrote (a foreign file
+    left in place has no entry). This is what the orientation lists and
+    what complete re-renders it from, since complete takes no
+    --skills-dir."""
     entries, _healthy = _load_render_manifest(
         dock_dir / RENDERED_SKILLS_FILE
     )
-    dirs = {str(Path(rel).parent.parent) for rel in entries}
-    return tuple(sorted(dirs))
+    by_dir: dict[str, set[str]] = {}
+    for rel in entries:
+        path = Path(rel)
+        by_dir.setdefault(str(path.parent.parent), set()).add(path.parent.name)
+    return {
+        directory: tuple(sorted(names)) for directory, names in by_dir.items()
+    }
 
 
 def dock_block_text(wiki_name: str) -> str:
@@ -594,7 +611,15 @@ def dock_block_text(wiki_name: str) -> str:
         f"{DOCK_BLOCK_START}\n"
         f"This repo is docked to the **{wiki_name}** wiki (wiki-kit). "
         "Read `.wiki/orientation.md` first - it names the wiki root, "
-        "the rendered project skills, and the commands a session needs.\n"
+        "the rendered project skills, and the commands a session needs. "
+        "That file, the dock overlay, and the rendered skills are "
+        "per-checkout wiring, never tracked. If they are missing here: "
+        "a fresh clone re-runs the same `wiki-dock.py install` command "
+        "that docked this repo; a linked worktree runs "
+        "`uv run --project <kit> <kit>/scripts/wiki-dock.py complete "
+        "--wiki <wiki root> --repo .` where `<kit>` is the wiki-kit "
+        "checkout and `<wiki root>` the wiki's path on this machine "
+        "(the kit's docs/ADOPTION.md, section 6).\n"
         f"{DOCK_BLOCK_END}"
     )
 
@@ -772,13 +797,20 @@ def cmd_install(args: argparse.Namespace) -> int:
             skill_targets,
             dock_dir / RENDERED_SKILLS_FILE,
         )
-    orientation = prepare_orientation(
-        config.name, companion.name, wiki_root, kit_root, skill_rel_dirs
+    # Preflight render with the planned mapping: a template bug fails
+    # loud before any write. The written text comes after the skill
+    # renders, from the record of what was really written.
+    prepare_orientation(
+        config.name,
+        companion.name,
+        wiki_root,
+        kit_root,
+        {directory: config.contract.skills for directory in skill_rel_dirs},
+        config.contract.protected,
     )
 
     write_manifest(dock_dir, config.name, companion.name)
     write_overlay(dock_dir, wiki_root)
-    write_orientation(dock_dir, orientation)
     apply_posture(
         repo,
         posture,
@@ -799,6 +831,17 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
     if skill_targets:
         render_skills(skill_renders, skill_targets, repo, dock_dir)
+    write_orientation(
+        dock_dir,
+        prepare_orientation(
+            config.name,
+            companion.name,
+            wiki_root,
+            kit_root,
+            recorded_skill_renders(dock_dir),
+            config.contract.protected,
+        ),
+    )
 
     dock = load_dock(dock_dir)
     verify_dock_identity(dock, wiki_root)
@@ -826,7 +869,8 @@ def cmd_complete(args: argparse.Namespace) -> int:
         dock.companion,
         wiki_root,
         config.tool("kit", str(KIT_ROOT)),
-        recorded_skill_dirs(dock_dir),
+        recorded_skill_renders(dock_dir),
+        config.contract.protected,
     )
     write_overlay(dock_dir, wiki_root)
     write_orientation(dock_dir, orientation)
