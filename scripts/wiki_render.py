@@ -67,7 +67,6 @@ GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 RECENT_SESSION_COUNT = 5
 LINE_BUDGET = 80
-CLAUDE_LOCAL_TOKEN_BUDGET = 3_000
 NIGHT_REPORT_WARN_TOKENS = 2_500
 NIGHT_REPORT_HARD_TOKENS = 4_000
 
@@ -659,11 +658,12 @@ def render_and_write_claude_local(
             file=sys.stderr,
         )
     tokens = estimate_token_count(text)
-    if tokens > CLAUDE_LOCAL_TOKEN_BUDGET:
+    hard_budget = config.budgets.claude_local.hard
+    if tokens > hard_budget:
         print(
             f"warning: {output} estimates {tokens} tokens "
-            f"({tokens - CLAUDE_LOCAL_TOKEN_BUDGET} over the "
-            f"{CLAUDE_LOCAL_TOKEN_BUDGET}-token hard budget; "
+            f"({tokens - hard_budget} over the "
+            f"{hard_budget}-token hard budget; "
             f"doctor will FAIL)",
             file=sys.stderr,
         )

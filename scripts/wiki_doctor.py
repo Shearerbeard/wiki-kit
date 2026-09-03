@@ -58,7 +58,6 @@ from wiki_frontmatter import (  # noqa: E402
     validate_workstream_body,
 )
 from wiki_render import (  # noqa: E402
-    CLAUDE_LOCAL_TOKEN_BUDGET,
     render_log,
 )
 
@@ -118,14 +117,24 @@ class Budget:
     hard: int
 
 
-TOKEN_BUDGETS = {
-    "claude-local": Budget(
-        "CLAUDE.local.md", warn=2_000, hard=CLAUDE_LOCAL_TOKEN_BUDGET
-    ),
-    "memory-index": Budget("MEMORY.md (per project)", warn=1_500, hard=2_000),
-    "workstream": Budget("workstream file", warn=2_500, hard=4_000),
-    "entity": Budget("entity page", warn=2_000, hard=3_500),
+BUDGET_LABELS = {
+    "claude_local": "CLAUDE.local.md",
+    "memory_index": "MEMORY.md (per project)",
+    "workstream": "workstream file",
+    "entity": "entity page",
 }
+
+
+def token_budgets(config: WikiConfig) -> dict[str, Budget]:
+    """The deployment's [budgets] as labelled doctor budgets."""
+    return {
+        surface: Budget(
+            label,
+            warn=getattr(config.budgets, surface).warn,
+            hard=getattr(config.budgets, surface).hard,
+        )
+        for surface, label in BUDGET_LABELS.items()
+    }
 
 
 def repo_relative(path: Path, root: Path) -> str:
@@ -371,20 +380,21 @@ def budget_finding(
 def check_token_budgets(ctx: DoctorContext) -> CheckOutcome:
     name = "token-budgets"
     findings: list[Finding] = []
+    budgets = token_budgets(ctx.config)
     surfaces: list[tuple[Path, Budget]] = []
     orientation = ctx.repo_root / "CLAUDE.local.md"
     if orientation.exists():
-        surfaces.append((orientation, TOKEN_BUDGETS["claude-local"]))
+        surfaces.append((orientation, budgets["claude_local"]))
     # The memory index is optional harness state: budget it when present,
     # say nothing when a deployment has none.
     if ctx.memory_index.exists():
-        surfaces.append((ctx.memory_index, TOKEN_BUDGETS["memory-index"]))
+        surfaces.append((ctx.memory_index, budgets["memory_index"]))
     surfaces.extend(
-        (path, TOKEN_BUDGETS["workstream"])
+        (path, budgets["workstream"])
         for path in workstream_validation_files(ctx.repo_root)
     )
     surfaces.extend(
-        (path, TOKEN_BUDGETS["entity"])
+        (path, budgets["entity"])
         for path in sorted((ctx.repo_root / "wiki" / "entities").glob("*.md"))
     )
     for path, budget in surfaces:

@@ -116,6 +116,25 @@ _COMPANION_KEYS = {
 _CONTRACT_KEYS = {"protected", "external_allow", "skills", "global_skills"}
 _SCHEDULE_KEYS = {"night", "morning", "garden_reminder"}
 _NIGHT_KEYS = {"report_dir", "commit_prefix"}
+_BUDGET_SURFACES = ("claude_local", "memory_index", "workstream", "entity")
+_BUDGET_KEYS = {
+    *(f"{surface}_warn" for surface in _BUDGET_SURFACES),
+    *(f"{surface}_hard" for surface in _BUDGET_SURFACES),
+    "parallel_workstreams_target",
+}
+# Estimated-token budgets (bytes / 4) the doctor enforces and the
+# renderer warns at; each surface's warn/hard pair, the historical
+# constants until a deployment sets its own.
+DEFAULT_BUDGETS = {
+    "claude_local_warn": 2_000,
+    "claude_local_hard": 3_000,
+    "memory_index_warn": 1_500,
+    "memory_index_hard": 2_000,
+    "workstream_warn": 2_500,
+    "workstream_hard": 4_000,
+    "entity_warn": 2_000,
+    "entity_hard": 3_500,
+}
 _KIT_KEYS = {"contract_version", "commit"}
 _TOP_LEVEL_TABLES = {
     "wiki",
@@ -124,6 +143,7 @@ _TOP_LEVEL_TABLES = {
     "contract",
     "schedule",
     "night",
+    "budgets",
     "kit",
 }
 
@@ -217,6 +237,26 @@ class NightConventions:
 
 
 @dataclass(frozen=True)
+class SurfaceBudget:
+    warn: int
+    hard: int
+
+
+@dataclass(frozen=True)
+class Budgets:
+    """[budgets]: the token budgets per orientation surface, and the
+    forefront size - how many active workstreams the orientation tree
+    lists in full before the rest collapse to one-line rows (None: list
+    every active workstream in full, the pre-budget behavior)."""
+
+    claude_local: SurfaceBudget
+    memory_index: SurfaceBudget
+    workstream: SurfaceBudget
+    entity: SurfaceBudget
+    parallel_workstreams_target: int | None
+
+
+@dataclass(frozen=True)
 class KitStamp:
     """The [kit] stamp: which contract version and kit commit stamped
     this deployment. Absent on pre-stamp deployments."""
@@ -235,6 +275,7 @@ class WikiConfig:
     contract: Contract
     schedule: Schedule
     night: NightConventions
+    budgets: Budgets
     companions: dict[str, Companion] = field(default_factory=dict)
     tools: dict[str, str] = field(default_factory=dict)
     extra_triage_dirs: tuple[str, ...] = ()
@@ -724,6 +765,41 @@ def _check_overlay_allowlist(overlay: dict, path: Path) -> None:
         )
 
 
+def _positive_int(table: dict, key: str, label: str, default: int | None) -> int | None:
+    value = table.get(key, default)
+    if value is None:
+        return None
+    _require(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        f"{label}.{key} must be a positive integer",
+    )
+    return value
+
+
+def _load_budgets(table: dict, label: str) -> Budgets:
+    _require(isinstance(table, dict), f"{label} must be a table")
+    _reject_unknown(set(table), _BUDGET_KEYS, label)
+    surfaces = {}
+    for surface in _BUDGET_SURFACES:
+        warn = _positive_int(
+            table, f"{surface}_warn", label, DEFAULT_BUDGETS[f"{surface}_warn"]
+        )
+        hard = _positive_int(
+            table, f"{surface}_hard", label, DEFAULT_BUDGETS[f"{surface}_hard"]
+        )
+        _require(
+            warn is not None and hard is not None and warn < hard,
+            f"{label}.{surface}_warn must be below {surface}_hard",
+        )
+        surfaces[surface] = SurfaceBudget(warn=warn, hard=hard)
+    return Budgets(
+        parallel_workstreams_target=_positive_int(
+            table, "parallel_workstreams_target", label, None
+        ),
+        **surfaces,
+    )
+
+
 def _string_or_none(table: dict, key: str, label: str) -> str | None:
     value = table.get(key)
     if value is None:
@@ -896,6 +972,8 @@ def load_config(root: Path) -> WikiConfig:
         commit_prefix=night_table.get("commit_prefix", "night:"),
     )
 
+    budgets = _load_budgets(raw.get("budgets", {}), f"{config_path} [budgets]")
+
     tools = dict(overlay.get("tools", {}))
     overlay_projects_root = overlay.get("memory", {}).get("projects_root")
     extra_dirs = overlay.get("memory", {}).get("triage", {}).get("extra_dirs", [])
@@ -937,6 +1015,7 @@ def load_config(root: Path) -> WikiConfig:
         contract=contract,
         schedule=schedule,
         night=night,
+        budgets=budgets,
         tools=tools,
         extra_triage_dirs=tuple(extra_dirs),
         projects_root=(
@@ -983,6 +1062,14 @@ def _config_as_json(config: WikiConfig) -> dict:
         "night": {
             "report_dir": config.night.report_dir,
             "commit_prefix": config.night.commit_prefix,
+        },
+        "budgets": {
+            **{
+                f"{surface}_{bound}": getattr(getattr(config.budgets, surface), bound)
+                for surface in _BUDGET_SURFACES
+                for bound in ("warn", "hard")
+            },
+            "parallel_workstreams_target": config.budgets.parallel_workstreams_target,
         },
         "tools": config.tools,
         "projects_root": (

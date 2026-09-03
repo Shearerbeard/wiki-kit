@@ -310,6 +310,22 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertIn("MEMORY.md", result.findings[0].message)
 
+    def test_token_budget_reads_the_deployments_budgets_table(self) -> None:
+        # 400 bytes is ~100 tokens: fine against the default 3000-token
+        # hard cap, over a deployment-set cap of 50.
+        self.write("CLAUDE.local.md", "x" * 400 + "\n")
+        self.assertFalse(wiki_doctor.check_token_budgets(self.ctx).failed)
+
+        self.write(
+            "wiki.toml",
+            MINIMAL_CONFIG + "\n[budgets]\nclaude_local_warn = 25\n"
+            "claude_local_hard = 50\n",
+        )
+        self._rebuild_ctx()
+        result = wiki_doctor.check_token_budgets(self.ctx)
+        self.assertTrue(result.failed)
+        self.assertIn("hard=50", result.findings[0].message)
+
     def test_token_budget_silent_when_no_memory_index_exists(self) -> None:
         self.write("CLAUDE.local.md", "small\n")
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -748,3 +749,80 @@ class KitStampTest(ResolverCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BudgetsTest(ResolverCase):
+    """[budgets]: token budgets per orientation surface plus the
+    forefront size; the historical constants are the defaults, so a
+    deployment without the table changes nothing."""
+
+    def make_budgeted_wiki(self, table: str) -> Path:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(
+            FULL_WIKI_TOML + "\n" + table, encoding="utf-8"
+        )
+        return root
+
+    def test_defaults_are_the_historical_constants(self) -> None:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(FULL_WIKI_TOML, encoding="utf-8")
+        budgets = wiki_config.load_config(root).budgets
+        pairs = {
+            surface: (bound.warn, bound.hard)
+            for surface, bound in (
+                ("claude_local", budgets.claude_local),
+                ("memory_index", budgets.memory_index),
+                ("workstream", budgets.workstream),
+                ("entity", budgets.entity),
+            )
+        }
+        self.assertEqual(
+            pairs,
+            {
+                "claude_local": (2000, 3000),
+                "memory_index": (1500, 2000),
+                "workstream": (2500, 4000),
+                "entity": (2000, 3500),
+            },
+        )
+        self.assertIsNone(budgets.parallel_workstreams_target)
+
+    def test_explicit_values_and_target_parse(self) -> None:
+        root = self.make_budgeted_wiki(
+            "[budgets]\nclaude_local_hard = 4500\nclaude_local_warn = 3000\n"
+            "parallel_workstreams_target = 6\n"
+        )
+        config = wiki_config.load_config(root)
+        self.assertEqual(config.budgets.claude_local.hard, 4500)
+        self.assertEqual(config.budgets.claude_local.warn, 3000)
+        self.assertEqual(config.budgets.workstream.hard, 4000)
+        self.assertEqual(config.budgets.parallel_workstreams_target, 6)
+        rendered = wiki_config._config_as_json(config)["budgets"]
+        self.assertEqual(rendered["claude_local_hard"], 4500)
+        self.assertEqual(rendered["parallel_workstreams_target"], 6)
+
+    def test_warn_must_stay_below_hard(self) -> None:
+        root = self.make_budgeted_wiki("[budgets]\nworkstream_warn = 4000\n")
+        with self.assertRaises(ConfigError) as caught:
+            wiki_config.load_config(root)
+        self.assertIn(
+            "workstream_warn must be below workstream_hard", str(caught.exception)
+        )
+
+    def test_non_positive_and_non_integer_values_fail_loud(self) -> None:
+        for table in (
+            "[budgets]\nentity_hard = 0\n",
+            '[budgets]\nentity_hard = "big"\n',
+            "[budgets]\nparallel_workstreams_target = true\n",
+            "[budgets]\nparallel_workstreams_target = -1\n",
+        ):
+            root = self.make_budgeted_wiki(table)
+            with self.assertRaises(ConfigError, msg=table):
+                wiki_config.load_config(root)
+            shutil.rmtree(root)
+
+    def test_unknown_key_fails_loud(self) -> None:
+        root = self.make_budgeted_wiki("[budgets]\nclaude_local_tokens = 3000\n")
+        with self.assertRaises(ConfigError) as caught:
+            wiki_config.load_config(root)
+        self.assertIn("claude_local_tokens", str(caught.exception))

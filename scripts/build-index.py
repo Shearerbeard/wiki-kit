@@ -27,6 +27,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import wiki_config  # noqa: E402
+from wiki_event import EventType, load_events  # noqa: E402
 from wiki_frontmatter import (  # noqa: E402
     FrontmatterError,
     parse_workstream_file,
@@ -234,19 +235,79 @@ def _truncate(text: str, limit: int = TREE_FIELD_MAX_CHARS) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def build_tree(streams: list[Workstream], workstreams_dir: Path) -> str:
+# A collapsed row carries the name (padded to 40), the date, and this
+# detail: 60 bounds the row near 125 characters, a third of the three
+# lines a full entry costs, which is the point of collapsing.
+OVERFLOW_DETAIL_MAX_CHARS = 60
+
+
+def latest_handoff_targets(events_dir: Path) -> set[str]:
+    """The baton: the workstreams the newest handoff event proposes to
+    update or create. Pinned into the forefront by name, so neither a
+    same-day last_updated tie nor a satellite nesting can drop the one
+    page a cold session needs next."""
+    handoffs = [
+        event
+        for event in load_events(events_dir)
+        if event.get("event_type") == EventType.HANDOFF
+    ]
+    if not handoffs:
+        return set()
+    # load_events sorts by (timestamp_utc, event_id); the last is newest.
+    newest = handoffs[-1]
+    return {
+        proposal["name"]
+        for proposal in newest.get("proposed_workstreams", [])
+        if proposal.get("relationship") in ("primary", "candidate_new")
+    }
+
+
+def select_forefront(
+    active: list[Workstream],
+    target: int | None,
+    pinned: frozenset[str] = frozenset(),
+) -> tuple[list[Workstream], list[Workstream]]:
+    """Split the active workstreams (already newest-first) into the ones
+    the tree lists in full and the rest, which it collapses to one-line
+    rows. Pinned names (the baton) stay in the forefront whatever their
+    position; beyond them the `target` newest fill it. A collapsed row
+    still shows its blocker, so no stop point disappears."""
+    if target is None:
+        return list(active), []
+    forefront = [s for s in active if s.name in pinned]
+    room = max(0, target - len(forefront))
+    for stream in active:
+        if stream.name in pinned:
+            continue
+        if room > 0:
+            forefront.append(stream)
+            room -= 1
+    chosen = {s.name for s in forefront}
+    forefront.sort(key=lambda s: active.index(s))
+    overflow = [s for s in active if s.name not in chosen]
+    return forefront, overflow
+
+
+def build_tree(
+    streams: list[Workstream],
+    workstreams_dir: Path,
+    forefront_target: int | None = None,
+    pinned: frozenset[str] = frozenset(),
+) -> str:
     all_active = sorted(
         [s for s in streams if s.status == "active"],
         key=lambda s: s.last_updated,
         reverse=True,
     )
-    board_epics = {s.epic for s in all_active if s.tier == "board-page"}
-    # Satellites nest under their epic's board page; a satellite whose epic
-    # has no active board page stays top-level (validate_epic_tiers reports
-    # it) rather than vanishing from the tree.
+    forefront, overflow = select_forefront(all_active, forefront_target, pinned)
+    board_epics = {s.epic for s in forefront if s.tier == "board-page"}
+    # Satellites nest under their epic's board page when both are in the
+    # forefront; a satellite whose epic is collapsed or has no active
+    # board page stays top-level (validate_epic_tiers reports the latter)
+    # rather than vanishing with it.
     satellites: dict[str, list[Workstream]] = {}
     active = []
-    for s in all_active:
+    for s in forefront:
         if s.tier == "satellite" and s.epic in board_epics:
             satellites.setdefault(s.epic, []).append(s)
         else:
@@ -267,7 +328,12 @@ def build_tree(streams: list[Workstream], workstreams_dir: Path) -> str:
         tag = (
             _truncate(s.blocker) if s.blocker else first_next[:40] if first_next else ""
         )
-        label = f"{s.name} [epic]" if s.tier == "board-page" else s.name
+        if s.tier == "board-page":
+            label = f"{s.name} [epic]"
+        elif s.tier == "satellite" and s.epic:
+            label = f"{s.name} (satellite of {s.epic})"
+        else:
+            label = s.name
         dots = "·" * max(1, 40 - len(label))
         lines.append(f"{connector} {label} {dots} {tag}")
         lines.append(f"{pad}{s.branch} @ {s.sha}")
@@ -300,6 +366,21 @@ def build_tree(streams: list[Workstream], workstreams_dir: Path) -> str:
             )
         if i < len(active) - 1:
             lines.append("│")
+
+    if overflow:
+        lines.append("")
+        lines.append(f"ACTIVE, NOT IN THE FOREFRONT ({len(overflow)})")
+        for s in overflow:
+            if s.blocker:
+                detail = "Blocked: " + _truncate(s.blocker, OVERFLOW_DETAIL_MAX_CHARS)
+            elif s.next_actions:
+                detail = "Next: " + _truncate(
+                    s.next_actions[0], OVERFLOW_DETAIL_MAX_CHARS
+                )
+            else:
+                detail = "Next: (none)"
+            dots = "·" * max(1, 40 - len(s.name))
+            lines.append(f"- {s.name} {dots} {s.last_updated} · {detail}")
 
     lines.append("")
     lines.append("PARKED")
@@ -432,7 +513,11 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(data, indent=2))
     else:
-        print(build_tree(streams, workstreams_dir))
+        target = config.budgets.parallel_workstreams_target
+        pinned: frozenset[str] = frozenset()
+        if target is not None:
+            pinned = frozenset(latest_handoff_targets(root / "wiki" / "events"))
+        print(build_tree(streams, workstreams_dir, target, pinned))
     return 0
 
 

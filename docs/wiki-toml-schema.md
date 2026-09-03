@@ -178,6 +178,29 @@ garden_reminder = "16:00"
 report_dir = "reports/night"
 commit_prefix = "night:"
 
+[budgets]
+# Estimated-token budgets ((bytes + 3) / 4) the doctor enforces (WARN
+# above warn, FAIL above hard) and the orientation renderer warns at.
+# Every key is optional; the values below are the defaults, so a
+# deployment without this table behaves as before. warn < hard, all
+# positive integers.
+claude_local_warn = 2000
+claude_local_hard = 3000
+memory_index_warn = 1500
+memory_index_hard = 2000
+workstream_warn = 2500
+workstream_hard = 4000
+entity_warn = 2000
+entity_hard = 3500
+# The forefront: how many ACTIVE workstreams the orientation tree lists
+# in full (newest last_updated first); the rest collapse to one-line
+# rows under "ACTIVE, NOT IN THE FOREFRONT", each showing its blocker
+# when it has one, else its next step. Recency keeps the baton in view:
+# garden apply stamps the targeted workstream's last_updated, and an
+# ungardened handoff sits in the pending section. Unset: every active
+# workstream renders in full.
+# parallel_workstreams_target = 8
+
 [kit]
 # Installer-owned stamp (boardkit's stamp pattern): the contract
 # version and kit commit this deployment was installed from. Rewritten
