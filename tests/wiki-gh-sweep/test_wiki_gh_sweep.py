@@ -26,6 +26,7 @@ from scripts.wiki_gh_sweep import (  # noqa: E402
     REF_RE,
     GhResult,
     SweepAbort,
+    collect_archive_refs,
     collect_stream_facts,
     extract_sections,
     main,
@@ -317,6 +318,36 @@ class ResolutionTest(unittest.TestCase):
         gh = fake_gh_factory({"repos/acme/widget/issues/7": "boom"})
         with self.assertRaises(SweepAbort):
             resolve_ref(gh, "acme/widget", 7)
+
+
+class ArchiveRefsTest(unittest.TestCase):
+    def test_no_archive_catalog_contributes_nothing(self) -> None:
+        # Nothing writes the catalog; a deployment that has archived
+        # nothing (or moved pages without cataloguing them) has none.
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "workstreams" / "_archive" / "index.md"
+            self.assertEqual(collect_archive_refs(index, "acme/widget"), [])
+
+    def test_sweep_runs_without_an_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_wiki_config(
+                root / "acme-notes",
+                companions={"widget": {"github": "acme/widget"}},
+            )
+            ws_dir = config.root / "workstreams"
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            (ws_dir / "stream.md").write_text(
+                WS_TEMPLATE.format(
+                    branch="main",
+                    blocker="",
+                    extra_fm="",
+                    current="working",
+                    next_item="nothing",
+                )
+            )
+            result = sweep(fake_gh_factory({}), config, workstreams_dir=ws_dir)
+            self.assertEqual(result["tiers"]["tier4_archive_open_prs"], [])
 
 
 class SweepTest(unittest.TestCase):

@@ -227,11 +227,18 @@ def collect_stream_facts(path: Path, default_repo: str | None) -> StreamFacts:
     )
 
 
-def collect_archive_refs(archive_index: Path, default_repo: str | None) -> list[Ref]:
+def archive_catalog_text(archive_index: Path) -> str:
+    """The hand-maintained archive catalog, or nothing: no script writes
+    it, and a deployment that has archived nothing has no file to read
+    (build-index treats the archive as optional the same way)."""
     if not archive_index.exists():
-        raise FileNotFoundError(f"archive index missing: {archive_index}")
+        return ""
+    return archive_index.read_text()
+
+
+def collect_archive_refs(archive_index: Path, default_repo: str | None) -> list[Ref]:
     return extract_refs_from_text(
-        archive_index.read_text(),
+        archive_catalog_text(archive_index),
         default_repo,
         "default",
         "_archive/index.md",
@@ -370,8 +377,8 @@ def sweep(
     # path and a github value on this machine — each companion's worktree
     # branches are tagged with that companion's own slug (a github-less or
     # path-less companion contributes none, per the schema's opt-out).
-    workstream_text = (
-        "\n".join(stream.text for stream in streams) + archive_index.read_text()
+    workstream_text = "\n".join(stream.text for stream in streams) + (
+        archive_catalog_text(archive_index)
     )
     mentioned_numbers = {
         ref_match_number(match) for match in REF_RE.finditer(workstream_text)
