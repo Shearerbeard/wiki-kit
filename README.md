@@ -83,7 +83,10 @@ Dock a consumer repo to a wiki and walk the first session:
 `docs/wiki-toml-schema.md` documents every key. `[contract]` is the
 single source for the deny-rule and skill contract; installer, doctor,
 and install-smoke all consume it. Companion repos are `[companions.*]`
-tables with their machine paths in the overlay.
+tables with their machine paths in the overlay. Decision records for
+the machinery live in `docs/adr/`; `0012-token-budgets.md` states the
+token budgets, their unit, and what each surface does when it goes
+over.
 
 ## Development
 
