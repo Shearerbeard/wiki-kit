@@ -52,6 +52,7 @@ from wiki_checkpoint import (  # noqa: E402
 from wiki_config import (  # noqa: E402
     ConfigError,
     WikiConfig,
+    estimate_tokens,
     load_config,
     resolve_wiki_root,
 )
@@ -642,9 +643,7 @@ class NightRunner:
         return f"report pass 2 written ({tokens} tokens est.)", ""
 
     def _estimate_report_tokens(self) -> int:
-        if not self.report_path.exists():
-            return 0
-        return len(self.report_path.read_text()) // 4
+        return estimate_tokens(self.report_path.read_bytes())
 
     def _verify_lock(self) -> tuple[str, str]:
         if not self._lock_token:

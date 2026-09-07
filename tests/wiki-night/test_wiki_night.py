@@ -534,6 +534,22 @@ class NightRunnerTest(unittest.TestCase):
             runner._estimate_report_tokens(), wiki_night.NIGHT_REPORT_HARD_TOKENS
         )
 
+    def test_report_budget_measures_bytes_not_characters(self) -> None:
+        # 6000 three-byte characters: a character count reads 1500 tokens
+        # and would pass; the byte estimate reads 4500 and must not.
+        runner = self._make_runner(scheduled=True)
+        runner.report.doctor_result = "\u65e5" * 6000
+
+        output, error = runner._update_report_pass2()
+
+        self.assertEqual(output, "")
+        self.assertIn("exceeds hard token budget", error)
+        characters = len(runner.report_path.read_text(encoding="utf-8"))
+        self.assertLess(characters // 4, wiki_night.NIGHT_REPORT_HARD_TOKENS)
+        self.assertGreater(
+            runner._estimate_report_tokens(), wiki_night.NIGHT_REPORT_HARD_TOKENS
+        )
+
     def test_sweep_findings_truncated_when_over_char_budget(self) -> None:
         runner = self._make_runner(scheduled=True)
         tier1_entries = "\n".join(

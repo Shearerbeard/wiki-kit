@@ -122,9 +122,9 @@ _BUDGET_KEYS = {
     *(f"{surface}_hard" for surface in _BUDGET_SURFACES),
     "parallel_workstreams_target",
 }
-# Estimated-token budgets (bytes / 4) the doctor enforces and the
-# renderer warns at; each surface's warn/hard pair, the historical
-# constants until a deployment sets its own.
+# Estimated-token budgets (measured by estimate_tokens) the doctor
+# enforces and the renderer warns at; each surface's warn/hard pair,
+# the historical constants until a deployment sets its own.
 DEFAULT_BUDGETS = {
     "claude_local_warn": 2_000,
     "claude_local_hard": 3_000,
@@ -234,6 +234,14 @@ class NightConventions:
 
     report_dir: str
     commit_prefix: str
+
+
+def estimate_tokens(data: bytes) -> int:
+    """The one token estimate every budget is measured with: UTF-8
+    bytes over four, rounded up. Shared by the doctor, the renderer,
+    and the night runner; a tokenizer replaces it only if observed
+    truncation diverges from it (ADR 0012)."""
+    return (len(data) + 3) // 4
 
 
 @dataclass(frozen=True)

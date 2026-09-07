@@ -362,9 +362,9 @@ def render_claude_local(
 
 
 def estimate_token_count(text: str) -> int:
-    """Rough token estimate (bytes // 4).  Shared with wiki_doctor so the
-    renderer can warn at the same threshold the doctor enforces."""
-    return (len(text.encode("utf-8")) + 3) // 4
+    """The shared estimator over the rendered text, so the renderer
+    warns at the same measure the doctor enforces."""
+    return wiki_config.estimate_tokens(text.encode("utf-8"))
 
 
 class TreeFacts(NamedTuple):

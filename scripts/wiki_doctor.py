@@ -37,6 +37,7 @@ from wiki_config import (  # noqa: E402
     WikiConfig,
     _git_common_root,
     contract_deny_rules,
+    estimate_tokens,
     git_hooks_dir,
     load_config,
     machine_path_violations,
@@ -360,7 +361,7 @@ def check_pending_index(ctx: DoctorContext) -> CheckOutcome:
 
 
 def estimated_tokens(path: Path) -> int:
-    return (len(path.read_bytes()) + 3) // 4
+    return estimate_tokens(path.read_bytes())
 
 
 def budget_finding(

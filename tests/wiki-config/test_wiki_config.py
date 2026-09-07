@@ -826,3 +826,18 @@ class BudgetsTest(ResolverCase):
         with self.assertRaises(ConfigError) as caught:
             wiki_config.load_config(root)
         self.assertIn("claude_local_tokens", str(caught.exception))
+
+
+class EstimateTokensTest(unittest.TestCase):
+    """One estimator for every budget: UTF-8 bytes over four, rounded up."""
+
+    def test_byte_boundaries_round_up(self) -> None:
+        cases = {b"": 0, b"x": 1, b"xxxx": 1, b"xxxxx": 2, b"x" * 12_004: 3001}
+        for data, expected in cases.items():
+            with self.subTest(length=len(data)):
+                self.assertEqual(wiki_config.estimate_tokens(data), expected)
+
+    def test_multibyte_text_is_measured_in_bytes_not_characters(self) -> None:
+        # Three characters, nine bytes: a character count would say one.
+        self.assertEqual(wiki_config.estimate_tokens("日本語".encode()), 3)
+        self.assertEqual(wiki_config.estimate_tokens("é".encode()), 1)
