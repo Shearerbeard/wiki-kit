@@ -35,6 +35,7 @@ from xml.sax.saxutils import escape
 
 from wiki_config import (
     KIT_ROOT,
+    SCHEDULE_TIME_RE,
     ConfigError,
     WikiConfig,
     load_config,
@@ -79,7 +80,6 @@ UNITS = {
     "garden-reminder": "garden_reminder",
 }
 
-TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 # Any non-nested mustache token, not just the TOKEN shape: a mistyped
 # {{Path}} or {{ PATH }} must reach _substitute's raise, not slip through.
 PLACEHOLDER_RE = re.compile(r"\{\{[^{}]*\}\}")
@@ -120,7 +120,7 @@ def _scheduler_hint(target_name: str, label_prefix: str) -> str:
 
 
 def _parse_time(value: str, key: str) -> tuple[int, int]:
-    match = TIME_RE.match(value)
+    match = SCHEDULE_TIME_RE.fullmatch(value)
     if match is None:
         raise ConfigError(
             f"[schedule].{key} must be HH:MM (24-hour), got {value!r}"

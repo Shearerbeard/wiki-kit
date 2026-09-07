@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -115,6 +116,9 @@ _COMPANION_KEYS = {
 }
 _CONTRACT_KEYS = {"protected", "external_allow", "skills", "global_skills"}
 _SCHEDULE_KEYS = {"night", "morning", "garden_reminder"}
+# [schedule] times: 24-hour HH:MM, the one shape the scheduler templates
+# render; checked at load so a bad value fails here, not at render.
+SCHEDULE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _NIGHT_KEYS = {"report_dir", "commit_prefix"}
 _BUDGET_SURFACES = (
     "orientation_index",
@@ -864,6 +868,26 @@ def _load_budgets(table: dict, label: str) -> Budgets:
     )
 
 
+def _string_value(table: dict, key: str, label: str, default: str) -> str:
+    """A required-shape string with a kit default: present or absent, the
+    value the loader hands on is a non-empty string."""
+    value = table.get(key, default)
+    _require(
+        isinstance(value, str) and value != "",
+        f"{label}.{key} must be a non-empty string",
+    )
+    return value
+
+
+def _schedule_time(table: dict, key: str, label: str, default: str) -> str:
+    value = _string_value(table, key, label, default)
+    _require(
+        SCHEDULE_TIME_RE.fullmatch(value) is not None,
+        f"{label}.{key} must be HH:MM (24-hour), got {value!r}",
+    )
+    return value
+
+
 def _string_or_none(table: dict, key: str, label: str) -> str | None:
     value = table.get(key)
     if value is None:
@@ -1022,18 +1046,28 @@ def load_config(root: Path) -> WikiConfig:
     _require(bool(contract.protected), f"{config_path} [contract].protected is empty")
 
     schedule_table = raw.get("schedule", {})
-    _reject_unknown(set(schedule_table), _SCHEDULE_KEYS, f"{config_path} [schedule]")
+    schedule_label = f"{config_path} [schedule]"
+    _require(isinstance(schedule_table, dict), f"{schedule_label} must be a table")
+    _reject_unknown(set(schedule_table), _SCHEDULE_KEYS, schedule_label)
     schedule = Schedule(
-        night=schedule_table.get("night", "03:00"),
-        morning=schedule_table.get("morning", "08:30"),
-        garden_reminder=schedule_table.get("garden_reminder", "16:00"),
+        night=_schedule_time(schedule_table, "night", schedule_label, "03:00"),
+        morning=_schedule_time(schedule_table, "morning", schedule_label, "08:30"),
+        garden_reminder=_schedule_time(
+            schedule_table, "garden_reminder", schedule_label, "16:00"
+        ),
     )
 
     night_table = raw.get("night", {})
-    _reject_unknown(set(night_table), _NIGHT_KEYS, f"{config_path} [night]")
+    night_label = f"{config_path} [night]"
+    _require(isinstance(night_table, dict), f"{night_label} must be a table")
+    _reject_unknown(set(night_table), _NIGHT_KEYS, night_label)
     night = NightConventions(
-        report_dir=night_table.get("report_dir", "reports/night"),
-        commit_prefix=night_table.get("commit_prefix", "night:"),
+        report_dir=_string_value(
+            night_table, "report_dir", night_label, "reports/night"
+        ),
+        commit_prefix=_string_value(
+            night_table, "commit_prefix", night_label, "night:"
+        ),
     )
 
     budgets = _load_budgets(raw.get("budgets", {}), f"{config_path} [budgets]")

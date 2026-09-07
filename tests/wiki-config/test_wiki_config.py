@@ -875,6 +875,65 @@ class BudgetsTest(ResolverCase):
         self.assertIn("banana_tokens", str(caught.exception))
 
 
+class ScheduleAndNightTablesTest(ResolverCase):
+    """[schedule] and [night] values are typed at load: a non-string, an
+    empty string, or a malformed time fails naming the key, instead of
+    loading and failing later in the scheduler render or the night
+    commit."""
+
+    def make_wiki(self, table: str) -> Path:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(
+            FULL_WIKI_TOML + "\n" + table, encoding="utf-8"
+        )
+        return root
+
+    def test_defaults_load_and_valid_values_parse(self) -> None:
+        root = self.make_wiki(
+            '[schedule]\nnight = "23:15"\n[night]\ncommit_prefix = "nightly:"\n'
+        )
+        config = wiki_config.load_config(root)
+        self.assertEqual(config.schedule.night, "23:15")
+        self.assertEqual(config.schedule.morning, "08:30")
+        self.assertEqual(config.night.commit_prefix, "nightly:")
+        self.assertEqual(config.night.report_dir, "reports/night")
+
+    def test_bad_values_fail_loud_naming_the_key(self) -> None:
+        non_empty = "must be a non-empty string"
+        cases = {
+            "[schedule]\nnight = 3\n": f"[schedule].night {non_empty}",
+            '[schedule]\nmorning = ""\n': f"[schedule].morning {non_empty}",
+            '[schedule]\ngarden_reminder = "8:30"\n': (
+                "[schedule].garden_reminder must be HH:MM (24-hour), got '8:30'"
+            ),
+            '[schedule]\nnight = "24:00"\n': "[schedule].night must be HH:MM",
+            '[schedule]\nnight = "23:60"\n': "[schedule].night must be HH:MM",
+            '[schedule]\nnight = "03:00\\n"\n': "[schedule].night must be HH:MM",
+            "[night]\nreport_dir = true\n": f"[night].report_dir {non_empty}",
+            '[night]\ncommit_prefix = ""\n': f"[night].commit_prefix {non_empty}",
+            "[night]\nreport_dir = 1\n": f"[night].report_dir {non_empty}",
+        }
+        for table, expected in cases.items():
+            root = self.make_wiki(table)
+            with self.assertRaises(ConfigError, msg=table) as caught:
+                wiki_config.load_config(root)
+            self.assertIn(expected, str(caught.exception), table)
+            shutil.rmtree(root)
+
+    def test_non_table_values_fail_loud(self) -> None:
+        # A scalar at the top of the file, where a table header would go.
+        for line, expected in (
+            ('schedule = "03:00"\n', "[schedule] must be a table"),
+            ("night = [1]\n", "[night] must be a table"),
+        ):
+            root = self.init_repo(self.base / "acme-notes")
+            (root / "wiki.toml").write_text(line + FULL_WIKI_TOML, encoding="utf-8")
+            with self.assertRaises(ConfigError, msg=line) as caught:
+                wiki_config.load_config(root)
+            self.assertIn(expected, str(caught.exception), line)
+            shutil.rmtree(root)
+
+
 class DeriveWarnTest(unittest.TestCase):
     """Two thirds of a ceiling, rounded down to the hundred, floor 1."""
 
