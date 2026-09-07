@@ -182,7 +182,7 @@ Do the following in order:
 8. **Render CLAUDE.local.md.** Run:
    `uv run --project {{KIT_ROOT}} {{KIT_ROOT}}/scripts/wiki-render.py claude-local --quickstart-file /tmp/garden-quickstart.md`
 
-   The renderer owns everything else deterministically: banner, pending-events warning, workstream tree, recent sessions, uncommitted changes (wiki repo + configured companions and their worktrees), and the garden lock around the write. If it exits 1 with "garden lock not acquired", another garden is running — abort and tell the user. On any other error (quickstart rejected, missing repo, build-index failure), report it, fix the cause (usually the temp file), and re-run — do not work around the renderer. It warns on stderr if the file exceeds 80 lines; relay that warning. Never Write/Edit CLAUDE.local.md directly.
+   The renderer owns everything else deterministically: banner, pending-events warning, workstream tree, recent sessions, uncommitted changes (wiki repo + configured companions and their worktrees), and the garden lock around the write. If it exits 1 with "garden lock not acquired", another garden is running — abort and tell the user. On any other error (quickstart rejected, missing repo, build-index failure), report it, fix the cause (usually the temp file), and re-run — do not work around the renderer. It warns on stderr when the file's estimated token count is over the orientation's hard budget (`[budgets]` in wiki.toml) and the doctor will FAIL on it; relay that warning. Never Write/Edit CLAUDE.local.md directly.
    Record each renderer-owned repo path changed by this step with
    the exact `approval_command` emitted by
    `uv run --project {{KIT_ROOT}} {{KIT_ROOT}}/scripts/wiki_checkpoint.py status --state-dir "$GARDEN_STATE_DIR"`.

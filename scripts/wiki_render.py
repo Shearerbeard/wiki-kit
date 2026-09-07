@@ -66,7 +66,6 @@ GARDEN_LOCK_SCRIPT = SCRIPT_DIR / "garden-lock.py"
 GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 RECENT_SESSION_COUNT = 5
-LINE_BUDGET = 80
 NIGHT_REPORT_WARN_TOKENS = 2_500
 NIGHT_REPORT_HARD_TOKENS = 4_000
 
@@ -362,12 +361,6 @@ def render_claude_local(
     return "\n".join(lines) + "\n"
 
 
-def line_budget_overrun(text: str) -> int:
-    """Lines over LINE_BUDGET (0 when within budget) — the garden flow's
-    line-budget check lives in the renderer."""
-    return max(0, len(text.splitlines()) - LINE_BUDGET)
-
-
 def estimate_token_count(text: str) -> int:
     """Rough token estimate (bytes // 4).  Shared with wiki_doctor so the
     renderer can warn at the same threshold the doctor enforces."""
@@ -650,13 +643,6 @@ def render_and_write_claude_local(
         now=args.now if args.now is not None else utc_timestamp(),
         memory_index_line=config.memory_index_line,
     )
-    overrun = line_budget_overrun(text)
-    if overrun:
-        print(
-            f"warning: {output} is {LINE_BUDGET + overrun} lines "
-            f"({overrun} over the {LINE_BUDGET}-line budget)",
-            file=sys.stderr,
-        )
     tokens = estimate_token_count(text)
     hard_budget = config.budgets.claude_local.hard
     if tokens > hard_budget:

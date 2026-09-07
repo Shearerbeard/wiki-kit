@@ -1075,12 +1075,6 @@ class ClaudeLocalAssemblyTest(unittest.TestCase):
         with self.assertRaises(wiki_render.ValidationError):
             self.assemble(quickstart="fine\n## Workstreams sneaking in")
 
-    def test_line_budget_overrun(self) -> None:
-        within = "\n".join(["x"] * wiki_render.LINE_BUDGET)
-        over = "\n".join(["x"] * (wiki_render.LINE_BUDGET + 3))
-        self.assertEqual(wiki_render.line_budget_overrun(within), 0)
-        self.assertEqual(wiki_render.line_budget_overrun(over), 3)
-
     def test_estimate_token_count_matches_doctor_heuristic(self) -> None:
         text = "x" * 12_004
         self.assertEqual(wiki_render.estimate_token_count(text), 3001)
