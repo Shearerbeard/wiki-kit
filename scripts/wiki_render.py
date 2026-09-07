@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -226,10 +227,25 @@ def render_pending_lines(events: list[dict[str, Any]]) -> list[str]:
     return [f"None — gardened {gardened_date}."]
 
 
+# A log heading ends in the event field render_entry writes, citing the
+# full id. The orientation's Recent Sessions lift shows that field's
+# first eight characters: a search hint under wiki/events/ at a third of
+# the width, not a unique locator (a UUIDv7's first eight hex characters
+# are the top of its millisecond timestamp, so two events within about
+# a minute share them). The log projection keeps the full id, and the
+# pattern is anchored to the line's end so a summary that mentions an
+# event id is left alone.
+SHORT_EVENT_ID_CHARS = 8
+HEADING_EVENT_ID_RE = re.compile(
+    rf"(event:[0-9a-f]{{{SHORT_EVENT_ID_CHARS}}})[0-9a-f-]+$"
+)
+
+
 def render_recent_session_lines(log_text: str) -> list[str]:
     headings = [line for line in log_text.splitlines() if line.startswith("## [")]
     return [
-        "- " + line.removeprefix("## ") for line in headings[-RECENT_SESSION_COUNT:]
+        "- " + HEADING_EVENT_ID_RE.sub(r"\1", line.removeprefix("## "))
+        for line in headings[-RECENT_SESSION_COUNT:]
     ]
 
 

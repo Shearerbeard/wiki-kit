@@ -836,6 +836,47 @@ class RecentSessionsTest(unittest.TestCase):
         lines = wiki_render.render_recent_session_lines(log_text)
         self.assertEqual(lines, ["- [2026-06-01T00:00:00Z] Only entry"])
 
+    def test_event_id_is_shortened_in_the_lift_only(self) -> None:
+        event_id = "01a079d4-0a49-7b07-a7b6-edb51968732c"
+        heading = (
+            f"## [2026-06-01T00:00:00Z] Entry @abc1234 branch:main tool:codex "
+            f"event:{event_id}"
+        )
+        garden_line = f"- Garden: applied 2026-06-02 (event {event_id})"
+        log_text = f"# Session Log\n\n{heading}\n{garden_line}\n"
+        lines = wiki_render.render_recent_session_lines(log_text)
+        self.assertEqual(
+            lines,
+            [
+                "- [2026-06-01T00:00:00Z] Entry @abc1234 branch:main tool:codex "
+                "event:01a079d4"
+            ],
+        )
+        # The log text handed in is not rewritten: the projection keeps the full id.
+        self.assertIn(f"event:{event_id}", log_text)
+
+    def test_a_heading_without_an_event_id_is_untouched(self) -> None:
+        heading = "## [2026-06-01T00:00:00Z] Legacy entry @abc1234 branch:main"
+        lines = wiki_render.render_recent_session_lines(heading + "\n")
+        self.assertEqual(lines, ["- " + heading.removeprefix("## ")])
+
+    def test_only_the_trailing_event_field_is_shortened(self) -> None:
+        # A summary may mention an event id; only the field render_entry
+        # appends at the end of the heading is shortened.
+        summary = "Diagnosed event:deadbeefcafebabe timeout"
+        event_id = "01a079d4-0a49-7b07-a7b6-edb51968732c"
+        heading = f"## [2026-06-01T00:00:00Z] {summary} @abc1234 branch:main tool:codex"
+        lines = wiki_render.render_recent_session_lines(
+            f"{heading} event:{event_id}\n{heading}\n"
+        )
+        self.assertEqual(
+            lines,
+            [
+                "- " + heading.removeprefix("## ") + " event:01a079d4",
+                "- " + heading.removeprefix("## "),
+            ],
+        )
+
 
 class QuickstartTest(unittest.TestCase):
     def test_validate_rejects_section_heading(self) -> None:
