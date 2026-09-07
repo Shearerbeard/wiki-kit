@@ -513,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(data, indent=2))
     else:
-        target = config.budgets.parallel_workstreams_target
+        target = config.budgets.workstreams_in_view
         pinned: frozenset[str] = frozenset()
         if target is not None:
             pinned = frozenset(latest_handoff_targets(root / "wiki" / "events"))

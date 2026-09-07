@@ -179,27 +179,53 @@ report_dir = "reports/night"
 commit_prefix = "night:"
 
 [budgets]
-# Estimated-token budgets ((bytes + 3) / 4) the doctor enforces (WARN
-# above warn, FAIL above hard) and the orientation renderer warns at.
-# Every key is optional; the values below are the defaults, so a
-# deployment without this table behaves as before. warn < hard, all
-# positive integers.
-claude_local_warn = 2000
-claude_local_hard = 3000
-memory_index_warn = 1500
-memory_index_hard = 2000
-workstream_warn = 2500
-workstream_hard = 4000
-entity_warn = 2000
-entity_hard = 3500
-# The forefront: how many ACTIVE workstreams the orientation tree lists
-# in full (newest last_updated first); the rest collapse to one-line
-# rows under "ACTIVE, NOT IN THE FOREFRONT", each showing its blocker
-# when it has one, else its next step. Recency keeps the baton in view:
-# garden apply stamps the targeted workstream's last_updated, and an
-# ungardened handoff sits in the pending section. Unset: every active
-# workstream renders in full.
-# parallel_workstreams_target = 8
+# Token budgets for the wiki's read surfaces: one ceiling per surface,
+# with the doctor's WARN threshold derived from it. Tokens are estimated
+# as UTF-8 bytes over four, rounded up, by one function the doctor, the
+# renderer, and the night runner share. Every key is optional and the
+# values below are the defaults; each ceiling is an integer of at least
+# 2. The "Budgets" section after this schema carries the table and a
+# worked example; docs/adr/0012-token-budgets.md is the decision record.
+#
+# The two numbers most deployments set.
+#
+# workstreams_in_view: how many ACTIVE workstreams the orientation index
+# lists in full (newest last_updated first). The rest collapse to
+# one-line rows under "ACTIVE, NOT IN THE FOREFRONT", each showing its
+# blocker when it has one, else its next step. The workstreams the
+# newest handoff proposes stay in view by name whatever their sort
+# position. Unset: every active workstream renders in full.
+# workstreams_in_view = 8
+#
+# workstream_tokens: the ceiling for one workstream page. The doctor
+# WARNs above two thirds of a ceiling (rounded down to the hundred) and
+# FAILs above the ceiling.
+workstream_tokens = 4000
+
+# Rarely changed; the same warn rule applies.
+#
+# orientation_index_tokens: the generated orientation index,
+# CLAUDE.local.md in the wiki repo. Measured as the whole file today;
+# ADR 0012 bounds it at the "## Uncommitted Changes" heading, which a
+# later K4 stage implements. A docked consumer's .wiki/orientation.md
+# is a fixed pointer page and is not budgeted.
+orientation_index_tokens = 3000
+# entity_tokens: one wiki/entities/ page.
+entity_tokens = 3500
+# memory_index_tokens: the harness's per-project memory index, budgeted
+# only when present.
+memory_index_tokens = 2000
+# night_report_tokens: one night report. The night runner, not the
+# doctor, enforces this one: it trims the report to the ceiling and
+# records the report's size under its Metrics as report_tokens on
+# every write, a trend number nothing acts on. The sweep-findings
+# section inside the report has its own cap, a 1500-token code
+# constant today, and is not a surface.
+night_report_tokens = 4000
+
+# Escape hatch: an explicit WARN threshold for any surface, which must
+# stay below its ceiling.
+# workstream_warn_tokens = 2500
 
 [kit]
 # Installer-owned stamp (boardkit's stamp pattern): the contract
@@ -234,6 +260,55 @@ git = "/usr/bin/git"
 # at run time instead of baking a path into the hook.
 kit = "/home/alex/src/wiki-kit"
 ```
+
+## Budgets
+
+`[budgets]` is the one place every budget the kit enforces lives. Each
+surface has a ceiling, and the doctor's WARN threshold derives from it
+at two thirds rounded down to the hundred: a ceiling of 4000 warns at
+2600. A ceiling too small for that rounding, such as a test value of
+50, warns at the unrounded two thirds, 33, and a ceiling is never below
+2. An explicit `<surface>_warn_tokens` overrides the derivation and must
+stay below its ceiling.
+
+| Key | Bounds | Default ceiling | Derived warn |
+|---|---|---|---|
+| `workstreams_in_view` | active workstreams the orientation lists in full | unset (all of them) | none (a count) |
+| `workstream_tokens` | one workstream page | 4000 | 2600 |
+| `orientation_index_tokens` | the orientation index, `CLAUDE.local.md` | 3000 | 2000 |
+| `entity_tokens` | one entity page under `wiki/entities/` | 3500 | 2300 |
+| `memory_index_tokens` | the per-project memory index, when present | 2000 | 1300 |
+| `night_report_tokens` | one night report | 4000 | 2600 (recorded, never acted on) |
+
+Over its ceiling, each surface class behaves differently. The
+orientation index collapses by count, so the lever is
+`workstreams_in_view` or parking workstreams. Workstream, entity, and
+memory-index pages are curation signals: the doctor WARNs, then FAILs,
+and never trims a page. The night report trims itself to its ceiling
+on every write. A doctor FAIL on any surface aborts the night runner's
+commit.
+
+How the two headline numbers relate, measured on a deployment with
+thirty active workstreams: a workstream listed in full costs about 68
+tokens and a collapsed row about 31, while the Quickstart, the pending
+line, the recent sessions, and the headings together cost about 510.
+The orientation therefore costs roughly `510 + 68 x in_view + 31 x
+(active - in_view)` plus the machine-local Uncommitted Changes section.
+With 30 active workstreams and 8 in view that is about 2,000 tokens
+against the 3000 ceiling.
+
+A deployment with no `[budgets]` table takes every default above.
+Against the Stage 1 defaults that moves four WARN thresholds (memory
+index 1500 to 1300, workstream 2500 to 2600, entity 2000 to 2300, night
+report 2500 to 2600) and changes no FAIL and no rendered byte of the
+orientation.
+
+The Stage 1 key names (`claude_local_hard`, `workstream_warn`,
+`parallel_workstreams_target`, and the rest of that spelling) are
+refused at load with an error naming the replacement key.
+`docs/VERSIONING.md` records why that is a load-time error rather than
+a contract bump, and `docs/adr/0012-token-budgets.md` holds the full
+rename table.
 
 ## Knob coverage check
 

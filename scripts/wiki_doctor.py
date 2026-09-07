@@ -119,7 +119,7 @@ class Budget:
 
 
 BUDGET_LABELS = {
-    "claude_local": "CLAUDE.local.md",
+    "orientation_index": "CLAUDE.local.md",
     "memory_index": "MEMORY.md (per project)",
     "workstream": "workstream file",
     "entity": "entity page",
@@ -385,7 +385,7 @@ def check_token_budgets(ctx: DoctorContext) -> CheckOutcome:
     surfaces: list[tuple[Path, Budget]] = []
     orientation = ctx.repo_root / "CLAUDE.local.md"
     if orientation.exists():
-        surfaces.append((orientation, budgets["claude_local"]))
+        surfaces.append((orientation, budgets["orientation_index"]))
     # The memory index is optional harness state: budget it when present,
     # say nothing when a deployment has none.
     if ctx.memory_index.exists():

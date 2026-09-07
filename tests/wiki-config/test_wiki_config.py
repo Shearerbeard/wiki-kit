@@ -747,14 +747,10 @@ class KitStampTest(ResolverCase):
         self.assertIn("unknown keys", str(caught.exception))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class BudgetsTest(ResolverCase):
-    """[budgets]: token budgets per orientation surface plus the
-    forefront size; the historical constants are the defaults, so a
-    deployment without the table changes nothing."""
+    """[budgets]: one ceiling per surface with the WARN threshold derived,
+    the forefront size, and the Stage 1 spelling refused by name."""
 
     def make_budgeted_wiki(self, table: str) -> Path:
         root = self.init_repo(self.base / "acme-notes")
@@ -763,58 +759,103 @@ class BudgetsTest(ResolverCase):
         )
         return root
 
-    def test_defaults_are_the_historical_constants(self) -> None:
-        root = self.init_repo(self.base / "acme-notes")
-        (root / "wiki.toml").write_text(FULL_WIKI_TOML, encoding="utf-8")
-        budgets = wiki_config.load_config(root).budgets
-        pairs = {
+    def surface_pairs(self, budgets: wiki_config.Budgets) -> dict[str, tuple[int, int]]:
+        return {
             surface: (bound.warn, bound.hard)
             for surface, bound in (
-                ("claude_local", budgets.claude_local),
+                ("orientation_index", budgets.orientation_index),
                 ("memory_index", budgets.memory_index),
                 ("workstream", budgets.workstream),
                 ("entity", budgets.entity),
+                ("night_report", budgets.night_report),
             )
         }
+
+    def test_defaults_are_the_ratified_ceilings_with_derived_warn(self) -> None:
+        root = self.init_repo(self.base / "acme-notes")
+        (root / "wiki.toml").write_text(FULL_WIKI_TOML, encoding="utf-8")
+        budgets = wiki_config.load_config(root).budgets
         self.assertEqual(
-            pairs,
+            self.surface_pairs(budgets),
             {
-                "claude_local": (2000, 3000),
-                "memory_index": (1500, 2000),
-                "workstream": (2500, 4000),
-                "entity": (2000, 3500),
+                "orientation_index": (2000, 3000),
+                "memory_index": (1300, 2000),
+                "workstream": (2600, 4000),
+                "entity": (2300, 3500),
+                "night_report": (2600, 4000),
             },
         )
-        self.assertIsNone(budgets.parallel_workstreams_target)
+        self.assertIsNone(budgets.workstreams_in_view)
 
-    def test_explicit_values_and_target_parse(self) -> None:
+    def test_explicit_ceiling_derives_its_own_warn(self) -> None:
+        # The Stage 1 trap: a ceiling lowered below the old default warn
+        # refused to load. A derived warn follows the ceiling down.
+        root = self.make_budgeted_wiki("[budgets]\nworkstream_tokens = 2000\n")
+        budgets = wiki_config.load_config(root).budgets
+        self.assertEqual(
+            (budgets.workstream.warn, budgets.workstream.hard), (1300, 2000)
+        )
+        self.assertEqual(budgets.entity.hard, 3500)
+
+    def test_warn_escape_hatch_and_forefront_parse(self) -> None:
         root = self.make_budgeted_wiki(
-            "[budgets]\nclaude_local_hard = 4500\nclaude_local_warn = 3000\n"
-            "parallel_workstreams_target = 6\n"
+            "[budgets]\norientation_index_tokens = 4500\n"
+            "orientation_index_warn_tokens = 3000\nworkstreams_in_view = 6\n"
         )
         config = wiki_config.load_config(root)
-        self.assertEqual(config.budgets.claude_local.hard, 4500)
-        self.assertEqual(config.budgets.claude_local.warn, 3000)
-        self.assertEqual(config.budgets.workstream.hard, 4000)
-        self.assertEqual(config.budgets.parallel_workstreams_target, 6)
-        rendered = wiki_config._config_as_json(config)["budgets"]
-        self.assertEqual(rendered["claude_local_hard"], 4500)
-        self.assertEqual(rendered["parallel_workstreams_target"], 6)
+        self.assertEqual(config.budgets.orientation_index.hard, 4500)
+        self.assertEqual(config.budgets.orientation_index.warn, 3000)
+        self.assertEqual(config.budgets.workstreams_in_view, 6)
 
-    def test_warn_must_stay_below_hard(self) -> None:
-        root = self.make_budgeted_wiki("[budgets]\nworkstream_warn = 4000\n")
-        with self.assertRaises(ConfigError) as caught:
-            wiki_config.load_config(root)
-        self.assertIn(
-            "workstream_warn must be below workstream_hard", str(caught.exception)
+    def test_json_surface_speaks_the_new_vocabulary(self) -> None:
+        root = self.make_budgeted_wiki(
+            "[budgets]\norientation_index_tokens = 4500\nworkstreams_in_view = 6\n"
         )
+        rendered = wiki_config._config_as_json(wiki_config.load_config(root))["budgets"]
+        self.assertEqual(
+            set(rendered),
+            {
+                *(f"{surface}_tokens" for surface in wiki_config._BUDGET_SURFACES),
+                *(f"{surface}_warn_tokens" for surface in wiki_config._BUDGET_SURFACES),
+                "workstreams_in_view",
+            },
+        )
+        self.assertEqual(rendered["orientation_index_tokens"], 4500)
+        self.assertEqual(rendered["orientation_index_warn_tokens"], 3000)
+        self.assertEqual(rendered["night_report_tokens"], 4000)
+        self.assertEqual(rendered["workstreams_in_view"], 6)
 
-    def test_non_positive_and_non_integer_values_fail_loud(self) -> None:
+    def test_explicit_warn_at_or_above_its_ceiling_fails_loud(self) -> None:
+        for warn in (4000, 4001):
+            root = self.make_budgeted_wiki(
+                f"[budgets]\nworkstream_warn_tokens = {warn}\n"
+            )
+            with self.assertRaises(ConfigError, msg=warn) as caught:
+                wiki_config.load_config(root)
+            self.assertIn(
+                "workstream_warn_tokens must be below workstream_tokens",
+                str(caught.exception),
+            )
+            shutil.rmtree(root)
+
+    def test_each_retired_key_names_its_replacement(self) -> None:
+        for old, new in wiki_config._RETIRED_BUDGET_KEYS.items():
+            root = self.make_budgeted_wiki(f"[budgets]\n{old} = 8\n")
+            with self.assertRaises(ConfigError, msg=old) as caught:
+                wiki_config.load_config(root)
+            message = str(caught.exception)
+            self.assertIn(f"{old} (now {new})", message)
+            self.assertIn("docs/wiki-toml-schema.md", message)
+            self.assertNotIn("unknown keys", message)
+            shutil.rmtree(root)
+
+    def test_non_positive_non_integer_and_tiny_values_fail_loud(self) -> None:
         for table in (
-            "[budgets]\nentity_hard = 0\n",
-            '[budgets]\nentity_hard = "big"\n',
-            "[budgets]\nparallel_workstreams_target = true\n",
-            "[budgets]\nparallel_workstreams_target = -1\n",
+            "[budgets]\nentity_tokens = 0\n",
+            '[budgets]\nentity_tokens = "big"\n',
+            "[budgets]\nentity_tokens = 1\n",
+            "[budgets]\nworkstreams_in_view = true\n",
+            "[budgets]\nworkstreams_in_view = -1\n",
         ):
             root = self.make_budgeted_wiki(table)
             with self.assertRaises(ConfigError, msg=table):
@@ -822,11 +863,31 @@ class BudgetsTest(ResolverCase):
             shutil.rmtree(root)
 
     def test_unknown_key_fails_loud(self) -> None:
-        root = self.make_budgeted_wiki("[budgets]\nclaude_local_tokens = 3000\n")
+        root = self.make_budgeted_wiki("[budgets]\nbanana_tokens = 3000\n")
         with self.assertRaises(ConfigError) as caught:
             wiki_config.load_config(root)
-        self.assertIn("claude_local_tokens", str(caught.exception))
+        self.assertIn("banana_tokens", str(caught.exception))
 
+
+class DeriveWarnTest(unittest.TestCase):
+    """Two thirds of a ceiling, rounded down to the hundred, floor 1."""
+
+    def test_ratified_defaults_and_edges(self) -> None:
+        cases = {
+            4000: 2600,
+            3500: 2300,
+            3000: 2000,
+            2000: 1300,
+            150: 100,
+            100: 66,
+            50: 33,
+            3: 2,
+            2: 1,
+        }
+        for hard, warn in cases.items():
+            with self.subTest(hard=hard):
+                self.assertEqual(wiki_config.derive_warn(hard), warn)
+                self.assertLess(warn, hard)
 
 class EstimateTokensTest(unittest.TestCase):
     """One estimator for every budget: UTF-8 bytes over four, rounded up."""
@@ -841,3 +902,7 @@ class EstimateTokensTest(unittest.TestCase):
         # Three characters, nine bytes: a character count would say one.
         self.assertEqual(wiki_config.estimate_tokens("日本語".encode()), 3)
         self.assertEqual(wiki_config.estimate_tokens("é".encode()), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

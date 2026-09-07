@@ -519,19 +519,20 @@ class NightRunnerTest(unittest.TestCase):
         self.assertTrue(runner.report.metrics["report_truncated"])
         self.assertNotIn("step_durations", runner.report.metrics)
         self.assertLessEqual(
-            runner._estimate_report_tokens(), wiki_night.NIGHT_REPORT_HARD_TOKENS
+            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
         )
 
     def test_report_pass_two_rejects_report_still_over_hard_budget(self) -> None:
         runner = self._make_runner(scheduled=True)
-        runner.report.doctor_result = "x" * (wiki_night.NIGHT_REPORT_HARD_TOKENS * 8)
+        ceiling = runner.config.budgets.night_report.hard
+        runner.report.doctor_result = "x" * (ceiling * 8)
 
         output, error = runner._update_report_pass2()
 
         self.assertEqual(output, "")
         self.assertIn("exceeds hard token budget", error)
         self.assertGreater(
-            runner._estimate_report_tokens(), wiki_night.NIGHT_REPORT_HARD_TOKENS
+            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
         )
 
     def test_report_budget_measures_bytes_not_characters(self) -> None:
@@ -545,9 +546,38 @@ class NightRunnerTest(unittest.TestCase):
         self.assertEqual(output, "")
         self.assertIn("exceeds hard token budget", error)
         characters = len(runner.report_path.read_text(encoding="utf-8"))
-        self.assertLess(characters // 4, wiki_night.NIGHT_REPORT_HARD_TOKENS)
+        self.assertLess(characters // 4, runner.config.budgets.night_report.hard)
         self.assertGreater(
-            runner._estimate_report_tokens(), wiki_night.NIGHT_REPORT_HARD_TOKENS
+            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
+        )
+
+    def test_report_budget_reads_the_deployments_table(self) -> None:
+        (self.root / WIKI_CONFIG_FILE).write_text(
+            WIKI_TOML + "\n[budgets]\nnight_report_tokens = 200\n"
+        )
+        runner = wiki_night.NightRunner(
+            wiki_config.load_config(self.root), scheduled=True
+        )
+        runner.report.doctor_result = "x" * 2000
+
+        output, error = runner._update_report_pass2()
+
+        self.assertEqual(output, "")
+        self.assertIn("> 200", error)
+
+    def test_every_write_records_the_report_size_under_metrics(self) -> None:
+        runner = self._make_runner(scheduled=True)
+        runner.report.doctor_result = "PASS render-log"
+
+        output, _ = runner._update_report_pass2()
+
+        measured = runner._estimate_report_tokens()
+        self.assertEqual(runner.report.report_tokens, measured)
+        self.assertIn(f"({measured} tokens est.)", output)
+        text = runner.report_path.read_text(encoding="utf-8")
+        self.assertIn(f"- Report tokens (est.): {measured}", text)
+        self.assertLess(
+            text.index("- Report tokens (est.)"), text.index("## Steps")
         )
 
     def test_sweep_findings_truncated_when_over_char_budget(self) -> None:

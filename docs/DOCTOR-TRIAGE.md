@@ -76,17 +76,18 @@ rebuilt from events and sources and compared.
 
 ## token-budgets
 
-Estimated token counts ((bytes + 3) / 4) against the deployment's
-`[budgets]` (`wiki-toml-schema.md`); the defaults are `CLAUDE.local.md`
-warn 2000 / hard 3000, the per-project memory index 1500/2000, each
-workstream file 2500/4000, each entity page 2000/3500. The memory index
-is budgeted only when present.
+Estimated token counts (UTF-8 bytes over four, rounded up) against the
+deployment's `[budgets]` ceilings. A surface above its derived warn
+threshold WARNs; above its ceiling it FAILs. The keys with their
+defaults and the derivation rule live in `wiki-toml-schema.md` under
+"Budgets" rather than here. The memory index is budgeted only when
+present.
 
-- FAIL on `CLAUDE.local.md`: the orientation outgrew its budget. The
-  levers, cheapest first: set `[budgets].parallel_workstreams_target`
-  so older active workstreams collapse to one-line rows; park or
-  archive finished workstreams; tighten the Quickstart; raise the
-  budget deliberately.
+- FAIL on `CLAUDE.local.md`: the orientation outgrew its ceiling. The
+  levers, cheapest first: set `[budgets].workstreams_in_view` so older
+  active workstreams collapse to one-line rows; park or archive
+  finished workstreams; tighten the Quickstart; raise the ceiling
+  deliberately.
 
 - WARN/FAIL: the named surface is too big. Garden the workstream or
   entity down; an over-budget `CLAUDE.local.md` means the orientation

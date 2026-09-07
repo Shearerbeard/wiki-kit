@@ -41,3 +41,25 @@ A contract version bump, when one is needed, is a deliberate migration:
 the new version lands in `SUPPORTED_CONTRACT_VERSIONS` alongside `1`
 until deployments are re-stamped, and the doctor names the mismatch in
 the meantime.
+
+## What counts as a contract bump
+
+Two classes of config change, told apart by who writes the table. A
+change to what the installer writes, or to what the tools read from an
+installer-written table, is a contract bump: the new version lands in
+`SUPPORTED_CONTRACT_VERSIONS` beside the old one, the installer's
+`CONTRACT_VERSION` moves, and the doctor's `kit-stamp` names the
+mismatch until every deployment is re-stamped.
+
+A rename inside an optional, hand-authored table is not a bump.
+`[budgets]` is such a table: the installer never writes it. Nor could
+a re-stamp repair a refused key, because the installer loads the
+config before it stamps. The loader refuses the old key with a
+`ConfigError` that names its replacement. The roll-out inventories
+every docked deployment's copy of the table and moves it in the same
+change that updates the kit checkout there, and the card that made the
+change records that inventory. The first rename of this kind is the
+`[budgets]` reshape in `docs/adr/0012-token-budgets.md`, where the
+Stage 1 spelling (`claude_local_hard` and its siblings, plus
+`parallel_workstreams_target`) gives way to `<surface>_tokens` and
+`workstreams_in_view`.

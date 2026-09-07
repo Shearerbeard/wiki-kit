@@ -116,24 +116,45 @@ _COMPANION_KEYS = {
 _CONTRACT_KEYS = {"protected", "external_allow", "skills", "global_skills"}
 _SCHEDULE_KEYS = {"night", "morning", "garden_reminder"}
 _NIGHT_KEYS = {"report_dir", "commit_prefix"}
-_BUDGET_SURFACES = ("claude_local", "memory_index", "workstream", "entity")
+_BUDGET_SURFACES = (
+    "orientation_index",
+    "memory_index",
+    "workstream",
+    "entity",
+    "night_report",
+)
 _BUDGET_KEYS = {
-    *(f"{surface}_warn" for surface in _BUDGET_SURFACES),
-    *(f"{surface}_hard" for surface in _BUDGET_SURFACES),
-    "parallel_workstreams_target",
+    *(f"{surface}_tokens" for surface in _BUDGET_SURFACES),
+    *(f"{surface}_warn_tokens" for surface in _BUDGET_SURFACES),
+    "workstreams_in_view",
 }
-# Estimated-token budgets (measured by estimate_tokens) the doctor
-# enforces and the renderer warns at; each surface's warn/hard pair,
-# the historical constants until a deployment sets its own.
+# Default ceilings per surface, measured by estimate_tokens and ratified
+# in docs/adr/0012-token-budgets.md. The WARN threshold derives from the
+# ceiling (derive_warn) unless a deployment sets <surface>_warn_tokens.
+# The doctor enforces the first four; the night runner enforces its own
+# report.
 DEFAULT_BUDGETS = {
-    "claude_local_warn": 2_000,
-    "claude_local_hard": 3_000,
-    "memory_index_warn": 1_500,
-    "memory_index_hard": 2_000,
-    "workstream_warn": 2_500,
-    "workstream_hard": 4_000,
-    "entity_warn": 2_000,
-    "entity_hard": 3_500,
+    "orientation_index": 3_000,
+    "memory_index": 2_000,
+    "workstream": 4_000,
+    "entity": 3_500,
+    "night_report": 4_000,
+}
+# A ceiling of 1 leaves no positive WARN threshold below it.
+MIN_BUDGET_CEILING = 2
+# The Stage 1 spelling, refused at load with the replacement named. A
+# rename inside this optional, hand-authored table is a load-time
+# error, not a contract bump (docs/VERSIONING.md).
+_RETIRED_BUDGET_KEYS = {
+    "claude_local_hard": "orientation_index_tokens",
+    "claude_local_warn": "orientation_index_warn_tokens",
+    "memory_index_hard": "memory_index_tokens",
+    "memory_index_warn": "memory_index_warn_tokens",
+    "workstream_hard": "workstream_tokens",
+    "workstream_warn": "workstream_warn_tokens",
+    "entity_hard": "entity_tokens",
+    "entity_warn": "entity_warn_tokens",
+    "parallel_workstreams_target": "workstreams_in_view",
 }
 _KIT_KEYS = {"contract_version", "commit"}
 _TOP_LEVEL_TABLES = {
@@ -252,16 +273,17 @@ class SurfaceBudget:
 
 @dataclass(frozen=True)
 class Budgets:
-    """[budgets]: the token budgets per orientation surface, and the
-    forefront size - how many active workstreams the orientation tree
-    lists in full before the rest collapse to one-line rows (None: list
-    every active workstream in full, the pre-budget behavior)."""
+    """[budgets]: one ceiling per read surface with its WARN threshold,
+    and the forefront size - how many active workstreams the orientation
+    tree lists in full before the rest collapse to one-line rows (None:
+    list every active workstream in full)."""
 
-    claude_local: SurfaceBudget
+    orientation_index: SurfaceBudget
     memory_index: SurfaceBudget
     workstream: SurfaceBudget
     entity: SurfaceBudget
-    parallel_workstreams_target: int | None
+    night_report: SurfaceBudget
+    workstreams_in_view: int | None
 
 
 @dataclass(frozen=True)
@@ -784,26 +806,44 @@ def _positive_int(table: dict, key: str, label: str, default: int | None) -> int
     return value
 
 
+def derive_warn(hard: int) -> int:
+    """The WARN threshold for a ceiling: two thirds, rounded down to the
+    hundred. When that rounding would give zero the unrounded two thirds
+    stands, never below 1 (50 derives to 33, 4000 to 2600)."""
+    two_thirds = hard * 2 // 3
+    return max(1, two_thirds // 100 * 100 or two_thirds)
+
+
 def _load_budgets(table: dict, label: str) -> Budgets:
     _require(isinstance(table, dict), f"{label} must be a table")
+    retired = sorted(set(table) & set(_RETIRED_BUDGET_KEYS))
+    _require(
+        not retired,
+        f"{label} uses retired keys: "
+        + ", ".join(f"{key} (now {_RETIRED_BUDGET_KEYS[key]})" for key in retired)
+        + "; see docs/wiki-toml-schema.md",
+    )
     _reject_unknown(set(table), _BUDGET_KEYS, label)
     surfaces = {}
     for surface in _BUDGET_SURFACES:
-        warn = _positive_int(
-            table, f"{surface}_warn", label, DEFAULT_BUDGETS[f"{surface}_warn"]
-        )
         hard = _positive_int(
-            table, f"{surface}_hard", label, DEFAULT_BUDGETS[f"{surface}_hard"]
+            table, f"{surface}_tokens", label, DEFAULT_BUDGETS[surface]
         )
         _require(
-            warn is not None and hard is not None and warn < hard,
-            f"{label}.{surface}_warn must be below {surface}_hard",
+            hard >= MIN_BUDGET_CEILING,
+            f"{label}.{surface}_tokens must be at least {MIN_BUDGET_CEILING}",
         )
+        warn = _positive_int(table, f"{surface}_warn_tokens", label, None)
+        if warn is None:
+            warn = derive_warn(hard)
+        else:
+            _require(
+                warn < hard,
+                f"{label}.{surface}_warn_tokens must be below {surface}_tokens",
+            )
         surfaces[surface] = SurfaceBudget(warn=warn, hard=hard)
     return Budgets(
-        parallel_workstreams_target=_positive_int(
-            table, "parallel_workstreams_target", label, None
-        ),
+        workstreams_in_view=_positive_int(table, "workstreams_in_view", label, None),
         **surfaces,
     )
 
@@ -1073,11 +1113,14 @@ def _config_as_json(config: WikiConfig) -> dict:
         },
         "budgets": {
             **{
-                f"{surface}_{bound}": getattr(getattr(config.budgets, surface), bound)
+                f"{surface}_tokens": getattr(config.budgets, surface).hard
                 for surface in _BUDGET_SURFACES
-                for bound in ("warn", "hard")
             },
-            "parallel_workstreams_target": config.budgets.parallel_workstreams_target,
+            **{
+                f"{surface}_warn_tokens": getattr(config.budgets, surface).warn
+                for surface in _BUDGET_SURFACES
+            },
+            "workstreams_in_view": config.budgets.workstreams_in_view,
         },
         "tools": config.tools,
         "projects_root": (

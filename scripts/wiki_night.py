@@ -71,7 +71,6 @@ from wiki_garden import (  # noqa: E402
     apply_event,
 )
 from wiki_gh_sweep import render_summary  # noqa: E402
-from wiki_render import NIGHT_REPORT_HARD_TOKENS  # noqa: E402
 
 SWEEP_FINDINGS_TOKEN_BUDGET = 1500
 SWEEP_FINDINGS_CHAR_BUDGET = SWEEP_FINDINGS_TOKEN_BUDGET * 4
@@ -125,6 +124,9 @@ class NightReport:
     doctor_result: str = ""
     doctor_clean: bool = False
     metrics: dict[str, Any] = field(default_factory=dict)
+    # The report's own estimated size, recorded on every write so growth
+    # shows as a trend under Metrics; nothing acts on it.
+    report_tokens: int | None = None
     steps: list[StepResult] = field(default_factory=list)
     lock_token: str | None = None
     abort_reason: str = ""
@@ -627,18 +629,19 @@ class NightRunner:
         return output, ""
 
     def _update_report_pass2(self) -> tuple[str, str]:
+        ceiling = self.config.budgets.night_report.hard
         self._write_report()
         tokens = self._estimate_report_tokens()
-        if tokens > NIGHT_REPORT_HARD_TOKENS:
+        if tokens > ceiling:
             self.report.metrics["report_truncated"] = True
             self.report.metrics.pop("step_durations", None)
             self._write_report()
             tokens = self._estimate_report_tokens()
-        if tokens > NIGHT_REPORT_HARD_TOKENS:
+        if tokens > ceiling:
             return (
                 "",
                 "night report exceeds hard token budget after metrics "
-                f"truncation: {tokens} > {NIGHT_REPORT_HARD_TOKENS}",
+                f"truncation: {tokens} > {ceiling}",
             )
         return f"report pass 2 written ({tokens} tokens est.)", ""
 
@@ -724,10 +727,25 @@ class NightRunner:
         self._commit_staged = False
         return commit_result.stdout.strip(), ""
 
+    def _render_report(self) -> str:
+        """The report text with its own estimated size recorded under
+        Metrics. The size line is part of the text it measures, so the
+        format repeats until the recorded number matches the text; one
+        more digit can move the estimate by at most one token, so it
+        settles within a few rounds."""
+        text = self._format_report()
+        for _ in range(4):
+            tokens = estimate_tokens(text.encode("utf-8"))
+            if self.report.report_tokens == tokens:
+                return text
+            self.report.report_tokens = tokens
+            text = self._format_report()
+        raise RuntimeError("night report size did not settle after four formats")
+
     def _write_report(self) -> None:
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self._assert_unchanged_before_write(self.report_path)
-        self.report_path.write_text(self._format_report(), encoding="utf-8")
+        self.report_path.write_text(self._render_report(), encoding="utf-8")
         self._touch(self.report_path)
 
     def _write_failed_commit_report(self) -> None:
@@ -749,7 +767,7 @@ class NightRunner:
                 self.report.abort_reason += (
                     f"; concurrent report state preserved at {conflict_relative}"
                 )
-        self.report_path.write_text(self._format_report(), encoding="utf-8")
+        self.report_path.write_text(self._render_report(), encoding="utf-8")
         self._touch(self.report_path)
 
     def _next_commit_conflict_path(self) -> Path:
@@ -872,6 +890,8 @@ class NightRunner:
                 lines.append(f"- {name}: {dur:.1f}s")
             if self.report.metrics.get("report_truncated"):
                 lines.append("- Report truncated (over budget)")
+        if self.report.report_tokens is not None:
+            lines.append(f"- Report tokens (est.): {self.report.report_tokens}")
         lines.append("")
 
         lines.append("## Steps")

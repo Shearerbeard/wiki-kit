@@ -318,8 +318,8 @@ class DoctorTest(unittest.TestCase):
 
         self.write(
             "wiki.toml",
-            MINIMAL_CONFIG + "\n[budgets]\nclaude_local_warn = 25\n"
-            "claude_local_hard = 50\n",
+            MINIMAL_CONFIG + "\n[budgets]\norientation_index_tokens = 50\n"
+            "orientation_index_warn_tokens = 25\n",
         )
         self._rebuild_ctx()
         result = wiki_doctor.check_token_budgets(self.ctx)
