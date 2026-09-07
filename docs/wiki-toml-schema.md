@@ -194,8 +194,8 @@ commit_prefix = "night:"
 # one-line rows under "ACTIVE, NOT IN THE FOREFRONT", each showing its
 # blocker when it has one, else its next step. The workstreams the
 # newest handoff proposes stay in view by name whatever their sort
-# position. Unset: every active workstream renders in full.
-# workstreams_in_view = 8
+# position. 0 means no cap: every active workstream renders in full.
+workstreams_in_view = 8
 #
 # workstream_tokens: the ceiling for one workstream page. The doctor
 # WARNs above two thirds of a ceiling (rounded down to the hundred) and
@@ -273,7 +273,7 @@ stay below its ceiling.
 
 | Key | Bounds | Default ceiling | Derived warn |
 |---|---|---|---|
-| `workstreams_in_view` | active workstreams the orientation lists in full | unset (all of them) | none (a count) |
+| `workstreams_in_view` | active workstreams the orientation lists in full; `0` means no cap | 8 | none (a count) |
 | `workstream_tokens` | one workstream page | 4000 | 2600 |
 | `orientation_index_tokens` | the orientation index, `CLAUDE.local.md` | 3000 | 2000 |
 | `entity_tokens` | one entity page under `wiki/entities/` | 3500 | 2300 |
@@ -300,8 +300,9 @@ against the 3000 ceiling.
 A deployment with no `[budgets]` table takes every default above.
 Against the Stage 1 defaults that moves four WARN thresholds (memory
 index 1500 to 1300, workstream 2500 to 2600, entity 2000 to 2300, night
-report 2500 to 2600) and changes no FAIL and no rendered byte of the
-orientation.
+report 2500 to 2600), changes no FAIL, and collapses the orientation
+tree past eight active workstreams; `workstreams_in_view = 0` restores
+the full list.
 
 The Stage 1 key names (`claude_local_hard`, `workstream_warn`,
 `parallel_workstreams_target`, and the rest of that spelling) are

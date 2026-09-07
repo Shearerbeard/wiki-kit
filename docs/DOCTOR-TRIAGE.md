@@ -84,8 +84,9 @@ defaults and the derivation rule live in `wiki-toml-schema.md` under
 present.
 
 - FAIL on `CLAUDE.local.md`: the orientation outgrew its ceiling. The
-  levers, cheapest first: set `[budgets].workstreams_in_view` so older
-  active workstreams collapse to one-line rows; park or archive
+  levers, cheapest first: lower `[budgets].workstreams_in_view` (or set
+  one, if it is 0) so more active workstreams collapse to one-line
+  rows; park or archive
   finished workstreams; tighten the Quickstart; raise the ceiling
   deliberately.
 

@@ -785,7 +785,7 @@ class BudgetsTest(ResolverCase):
                 "night_report": (2600, 4000),
             },
         )
-        self.assertIsNone(budgets.workstreams_in_view)
+        self.assertEqual(budgets.workstreams_in_view, 8)
 
     def test_explicit_ceiling_derives_its_own_warn(self) -> None:
         # The Stage 1 trap: a ceiling lowered below the old default warn
@@ -806,6 +806,12 @@ class BudgetsTest(ResolverCase):
         self.assertEqual(config.budgets.orientation_index.hard, 4500)
         self.assertEqual(config.budgets.orientation_index.warn, 3000)
         self.assertEqual(config.budgets.workstreams_in_view, 6)
+
+    def test_zero_in_view_means_no_cap(self) -> None:
+        root = self.make_budgeted_wiki("[budgets]\nworkstreams_in_view = 0\n")
+        config = wiki_config.load_config(root)
+        self.assertIsNone(config.budgets.workstreams_in_view)
+        self.assertIsNone(wiki_config._config_as_json(config)["budgets"]["workstreams_in_view"])
 
     def test_json_surface_speaks_the_new_vocabulary(self) -> None:
         root = self.make_budgeted_wiki(

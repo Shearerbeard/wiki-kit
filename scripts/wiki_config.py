@@ -142,6 +142,8 @@ DEFAULT_BUDGETS = {
 }
 # A ceiling of 1 leaves no positive WARN threshold below it.
 MIN_BUDGET_CEILING = 2
+# The forefront size when a deployment sets none; 0 spells "no cap".
+DEFAULT_WORKSTREAMS_IN_VIEW = 8
 # The Stage 1 spelling, refused at load with the replacement named. A
 # rename inside this optional, hand-authored table is a load-time
 # error, not a contract bump (docs/VERSIONING.md).
@@ -275,8 +277,8 @@ class SurfaceBudget:
 class Budgets:
     """[budgets]: one ceiling per read surface with its WARN threshold,
     and the forefront size - how many active workstreams the orientation
-    tree lists in full before the rest collapse to one-line rows (None:
-    list every active workstream in full)."""
+    tree lists in full before the rest collapse to one-line rows (None,
+    spelled 0 in config: list every active workstream in full)."""
 
     orientation_index: SurfaceBudget
     memory_index: SurfaceBudget
@@ -806,6 +808,18 @@ def _positive_int(table: dict, key: str, label: str, default: int | None) -> int
     return value
 
 
+def _forefront_size(table: dict, key: str, label: str, default: int) -> int | None:
+    """A non-negative integer where 0 means no cap, handed on as None so
+    the tree's selection keeps its uncapped branch. TOML has no null, so
+    a default makes the spelling for "list everything" necessary."""
+    value = table.get(key, default)
+    _require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{label}.{key} must be a non-negative integer (0 means no cap)",
+    )
+    return None if value == 0 else value
+
+
 def derive_warn(hard: int) -> int:
     """The WARN threshold for a ceiling: two thirds, rounded down to the
     hundred. When that rounding would give zero the unrounded two thirds
@@ -843,7 +857,9 @@ def _load_budgets(table: dict, label: str) -> Budgets:
             )
         surfaces[surface] = SurfaceBudget(warn=warn, hard=hard)
     return Budgets(
-        workstreams_in_view=_positive_int(table, "workstreams_in_view", label, None),
+        workstreams_in_view=_forefront_size(
+            table, "workstreams_in_view", label, DEFAULT_WORKSTREAMS_IN_VIEW
+        ),
         **surfaces,
     )
 

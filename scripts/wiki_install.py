@@ -160,6 +160,13 @@ def default_wiki_toml(name: str) -> str:
         "[night]",
         'report_dir = "reports/night"',
         'commit_prefix = "night:"',
+        "",
+        "# [budgets]",
+        "# The two numbers most deployments set; docs/wiki-toml-schema.md",
+        "# has the rest. 0 in view means no cap. Uncomment the table header",
+        "# together with a key, or the key lands in [night].",
+        "# workstreams_in_view = 8",
+        "# workstream_tokens = 4000",
     ]
     return "\n".join(lines) + "\n"
 

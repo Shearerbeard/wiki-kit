@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Tests for build-index.py's forefront selection: the [budgets]
-parallel_workstreams_target knob and the blocker guard."""
+workstreams_in_view knob, its default, and the baton guard."""
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
@@ -198,6 +200,79 @@ class TreeRenderingTest(unittest.TestCase):
         self.assertNotIn("(satellite of", tree)
         self.assertIn("epic [epic]", tree)
         self.assertIn("- older", tree)
+
+    def test_pinned_count_above_the_target_renders_every_pinned_in_full(self) -> None:
+        pinned = frozenset({"third", "second", "oldest"})
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = build_index.build_tree(FIVE, Path(tmp), 2, pinned)
+        entries = self.full_entries(tree)
+        self.assertEqual(set(entries), pinned)
+        self.assertIn("ACTIVE, NOT IN THE FOREFRONT (2)", tree)
+
+
+WIKI_TOML = """\
+[wiki]
+name = "acme-notes"
+
+[contract]
+protected = ["wiki/log.md"]
+external_allow = []
+skills = ["garden"]
+global_skills = []
+"""
+
+
+class DefaultForefrontTest(unittest.TestCase):
+    """The default of eight, the 0 spelling for no cap, and the loud
+    failure on a wiki with no event store, all through build-index's
+    own entry point."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve() / "wiki"
+        (self.root / "workstreams").mkdir(parents=True)
+        (self.root / "wiki" / "events").mkdir(parents=True)
+        for day in range(1, 10):
+            (self.root / "workstreams" / f"stream-{day:02d}.md").write_text(
+                "---\nstatus: active\nbranch: main\nsha: abc1234\n"
+                f"last_updated: 2026-07-{day:02d}\n---\n"
+                "## Session updates (uncurated)\n",
+                encoding="utf-8",
+            )
+        self.write_config("")
+
+    def write_config(self, budgets: str) -> None:
+        (self.root / "wiki.toml").write_text(WIKI_TOML + budgets, encoding="utf-8")
+
+    def render(self) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(build_index.main(["--wiki", str(self.root)]), 0)
+        return out.getvalue()
+
+    def test_nine_active_with_no_table_collapse_one(self) -> None:
+        tree = self.render()
+        self.assertIn("ACTIVE, NOT IN THE FOREFRONT (1)", tree)
+        self.assertIn("- stream-01", tree)
+        self.assertEqual(tree.count("main @ abc1234"), 8)
+
+    def test_zero_in_view_renders_every_active_in_full(self) -> None:
+        self.write_config("\n[budgets]\nworkstreams_in_view = 0\n")
+        tree = self.render()
+        self.assertNotIn("NOT IN THE FOREFRONT", tree)
+        self.assertEqual(tree.count("main @ abc1234"), 9)
+
+    def test_missing_event_store_fails_loud(self) -> None:
+        import wiki_event
+
+        (self.root / "wiki" / "events").rmdir()
+        with (
+            self.assertRaises(wiki_event.ValidationError) as caught,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            build_index.main(["--wiki", str(self.root)])
+        self.assertIn("events directory", str(caught.exception))
 
 
 class LatestHandoffTargetsTest(unittest.TestCase):
