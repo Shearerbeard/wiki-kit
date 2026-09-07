@@ -69,6 +69,92 @@ WORKSTREAM_OK = (
 )
 
 
+def _forefront(active: int, cap: int | None, listed: int, pinned: int = 0) -> Any:
+    return wiki_doctor.Forefront(active, cap, listed, pinned, 68, 37)
+
+
+class OrientationLeverTest(unittest.TestCase):
+    """The lever text sizes both actions from the forefront facts."""
+
+    def test_capped_view_sizes_both_actions(self) -> None:
+        # 100 over: a lowered entry saves 68 - 37 = 31, so four; an
+        # archived row saves 37, so three.
+        text = wiki_doctor.orientation_lever(3100, 3000, _forefront(30, 8, 8))
+        self.assertIn(
+            "Lever: 30 active, 8 listed in full (workstreams_in_view 8);", text
+        )
+        self.assertIn("about 68 tokens", text)
+        self.assertIn("about 37", text)
+        self.assertIn("Set workstreams_in_view to 4 (about 124 tokens)", text)
+        self.assertIn("archive 3 workstreams (about 111 tokens)", text)
+        self.assertNotIn("short of", text)
+        self.assertNotIn("pinned", text)
+
+    def test_overrun_boundaries(self) -> None:
+        one = wiki_doctor.orientation_lever(3001, 3000, _forefront(30, 8, 8))
+        self.assertIn("Set workstreams_in_view to 7 (about 31 tokens)", one)
+        self.assertIn("archive 1 workstreams (about 37 tokens)", one)
+        exact = wiki_doctor.orientation_lever(3037, 3000, _forefront(30, 8, 8))
+        self.assertIn("Set workstreams_in_view to 6 (about 62 tokens)", exact)
+        self.assertIn("archive 1 workstreams (about 37 tokens)", exact)
+
+    def test_no_cap_reads_as_all_listed(self) -> None:
+        text = wiki_doctor.orientation_lever(3100, 3000, _forefront(12, None, 12))
+        self.assertIn("12 active, all listed in full (no cap);", text)
+        self.assertIn("Set workstreams_in_view to 8 ", text)
+
+    def test_cap_above_the_active_count_lowers_from_the_listed_count(self) -> None:
+        text = wiki_doctor.orientation_lever(3100, 3000, _forefront(5, 8, 5))
+        self.assertIn("5 active, all listed in full (workstreams_in_view 8);", text)
+        self.assertIn("Set workstreams_in_view to 1 ", text)
+
+    def test_pins_raise_the_floor(self) -> None:
+        # Eight pinned under a cap of eight: lowering the cap changes
+        # nothing, and the text says so instead of promising a saving.
+        text = wiki_doctor.orientation_lever(3051, 3000, _forefront(30, 8, 8, pinned=8))
+        self.assertIn("8 listed in full (workstreams_in_view 8), 8 pinned", text)
+        self.assertIn("workstreams_in_view is at its floor of 8 (8 pinned by", text)
+        self.assertNotIn("Set workstreams_in_view", text)
+        # Three pinned: the view lowers to three at most.
+        text = wiki_doctor.orientation_lever(3400, 3000, _forefront(30, 8, 8, pinned=3))
+        self.assertIn("Set workstreams_in_view to 3 (about 155 tokens, short of", text)
+
+    def test_an_action_that_cannot_cover_the_overrun_says_so(self) -> None:
+        text = wiki_doctor.orientation_lever(3200, 3000, _forefront(3, 3, 3))
+        self.assertIn(
+            "Set workstreams_in_view to 1 (about 62 tokens, short of the 200 over)",
+            text,
+        )
+        self.assertIn(
+            "archive 3 workstreams (about 111 tokens, short of the 200 over)", text
+        )
+
+    def test_pins_floor_a_cap_proposed_from_no_cap(self) -> None:
+        forefront = _forefront(8, None, 8, pinned=8)
+        text = wiki_doctor.orientation_lever(3051, 3000, forefront)
+        self.assertIn("8 active, all listed in full (no cap), 8 pinned", text)
+        self.assertIn("workstreams_in_view is at its floor of 8 (8 pinned by", text)
+        self.assertNotIn("Set workstreams_in_view", text)
+
+    def test_the_view_never_drops_to_zero(self) -> None:
+        for cap in (1, None):
+            text = wiki_doctor.orientation_lever(3200, 3000, _forefront(1, cap, 1))
+            self.assertIn(
+                "workstreams_in_view is at its floor of 1 (0 means no cap)", text
+            )
+            self.assertNotIn("Set workstreams_in_view to 0", text)
+            self.assertIn("archive 1 workstreams", text)
+
+    def test_no_active_workstreams_points_at_the_fixed_sections(self) -> None:
+        text = wiki_doctor.orientation_lever(3100, 3000, _forefront(0, 8, 0))
+        self.assertIn("No active workstreams to collapse or archive", text)
+        self.assertNotIn("Set workstreams_in_view", text)
+
+    def test_needs_an_overrun(self) -> None:
+        with self.assertRaises(ValueError):
+            wiki_doctor.orientation_lever(3000, 3000, _forefront(30, 8, 8))
+
+
 class DoctorTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -325,6 +411,212 @@ class DoctorTest(unittest.TestCase):
         result = wiki_doctor.check_token_budgets(self.ctx)
         self.assertTrue(result.failed)
         self.assertIn("hard=50", result.findings[0].message)
+
+    def _budgets(self, table: str) -> None:
+        self.write("wiki.toml", MINIMAL_CONFIG + "\n[budgets]\n" + table)
+        self._rebuild_ctx()
+
+    def _active_workstreams(self, count: int) -> None:
+        (self.root / "wiki" / "events").mkdir(parents=True, exist_ok=True)
+        for day in range(1, count + 1):
+            self.write(
+                f"workstreams/stream-{day:02d}.md",
+                WORKSTREAM_OK.replace("2026-07-03", f"2026-07-{day:02d}"),
+            )
+
+    def _pin(self, names: list[str]) -> None:
+        import wiki_event
+
+        event = {
+            "event_id": wiki_event.uuid7(),
+            "event_type": "handoff",
+            "schema_version": 2,
+            "timestamp_utc": "2026-07-20T00:00:00Z",
+            "tool": "manual",
+            "status": "pending_garden",
+            "summary": "pins",
+            "repo": {"name": "widget", "branch": "main", "sha": "abc1234"},
+            "sources": [],
+            "workstream_state": {
+                "current_state": ["s"],
+                "what_was_done": ["d"],
+                "next": ["n"],
+                "blockers": [],
+                "continuation_context": "c",
+            },
+            "proposed_workstreams": [
+                {"name": name, "relationship": "primary", "proposed_action": "u"}
+                for name in names
+            ],
+        }
+        wiki_event.validate_event(event)
+        wiki_event.write_event(self.root / "wiki" / "events", event)
+
+    def _tree(self) -> str:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_ROOT / "scripts" / "build-index.py"),
+                "--wiki",
+                str(self.root),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    def _orientation_message(self) -> str:
+        result = wiki_doctor.check_token_budgets(self.ctx)
+        finding = result.findings[0]
+        self.assertIn("CLAUDE.local.md", finding.message)
+        return finding.message
+
+    def test_token_budget_orientation_fail_names_the_lever(self) -> None:
+        # 1201 bytes is 301 tokens: 101 over a 200 ceiling, so the lever
+        # lowers the view by four (31 saved each) or archives three (37).
+        self._budgets("orientation_index_tokens = 200\n")
+        self._active_workstreams(12)
+        self.write("CLAUDE.local.md", "x" * 1200 + "\n")
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertTrue(result.failed)
+        message = result.findings[0].message
+        self.assertIn("CLAUDE.local.md estimates 301 tokens", message)
+        self.assertIn(
+            "Lever: 12 active, 8 listed in full (workstreams_in_view 8);", message
+        )
+        self.assertIn("Set workstreams_in_view to 4 (about 124 tokens)", message)
+        self.assertIn("archive 3 workstreams (about 111 tokens)", message)
+        self.assertNotIn("park", message)
+
+    def test_token_budget_lever_actions_shrink_the_rendered_tree(self) -> None:
+        # The promise is checked against this renderer: the recommended
+        # cap collapses four more entries, and archiving three removes
+        # three rows; both renders are smaller than the one measured.
+        self._budgets("orientation_index_tokens = 200\n")
+        self._active_workstreams(12)
+        self.write("CLAUDE.local.md", "x" * 1200 + "\n")
+        self.assertIn("Set workstreams_in_view to 4 ", self._orientation_message())
+        before = self._tree()
+        self.assertIn("NOT IN THE FOREFRONT (4)", before)
+
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 4\n")
+        lowered = self._tree()
+        self.assertIn("NOT IN THE FOREFRONT (8)", lowered)
+        self.assertLess(
+            wiki_doctor.estimate_tokens(lowered.encode()),
+            wiki_doctor.estimate_tokens(before.encode()),
+        )
+
+        self._budgets("orientation_index_tokens = 200\n")
+        archive = self.root / "workstreams" / "_archive"
+        archive.mkdir()
+        for day in (1, 2, 3):
+            page = self.root / "workstreams" / f"stream-{day:02d}.md"
+            page.rename(archive / page.name)
+        archived = self._tree()
+        self.assertIn("NOT IN THE FOREFRONT (1)", archived)
+        self.assertLess(
+            wiki_doctor.estimate_tokens(archived.encode()),
+            wiki_doctor.estimate_tokens(before.encode()),
+        )
+
+    def test_token_budget_lever_floors_at_the_pinned_count(self) -> None:
+        # Three pins with a cap of three: the view cannot lower, and a
+        # cap of one renders the same tree.
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 3\n")
+        self._active_workstreams(12)
+        self._pin(["stream-01", "stream-02", "stream-03"])
+        self.write("CLAUDE.local.md", "x" * 1200 + "\n")
+
+        message = self._orientation_message()
+
+        self.assertIn(
+            "3 listed in full (workstreams_in_view 3), 3 pinned by the newest "
+            "handoff;",
+            message,
+        )
+        self.assertIn(
+            "workstreams_in_view is at its floor of 3 (3 pinned by the newest "
+            "handoff), or archive 3 workstreams",
+            message,
+        )
+        self.assertNotIn("Set workstreams_in_view", message)
+        before = self._tree()
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 1\n")
+        self.assertEqual(self._tree(), before)
+
+    def test_token_budget_lever_floors_at_the_pins_with_no_cap(self) -> None:
+        # Eight active, all pinned, no cap: a cap proposed from here
+        # could not collapse anything, and the tree at a cap of six is
+        # byte-identical to the uncapped one.
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 0\n")
+        self._active_workstreams(8)
+        self._pin([f"stream-{day:02d}" for day in range(1, 9)])
+        self.write("CLAUDE.local.md", "x" * 1200 + "\n")
+
+        message = self._orientation_message()
+
+        self.assertIn(
+            "8 active, all listed in full (no cap), 8 pinned by the newest handoff;",
+            message,
+        )
+        self.assertIn("workstreams_in_view is at its floor of 8 (8 pinned by", message)
+        self.assertNotIn("Set workstreams_in_view", message)
+        before = self._tree()
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 6\n")
+        self.assertEqual(self._tree(), before)
+
+    def test_token_budget_orientation_warn_levers_against_the_warn(self) -> None:
+        # 601 bytes is 151 tokens: under the 200 ceiling, 51 over the
+        # derived warn of 100, so the WARN sizes the way back under 100.
+        self._budgets("orientation_index_tokens = 200\nworkstreams_in_view = 0\n")
+        self._active_workstreams(12)
+        self.write("CLAUDE.local.md", "x" * 600 + "\n")
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertFalse(result.failed)
+        self.assertTrue(result.warned)
+        message = result.findings[0].message
+        self.assertIn("Lever: 12 active, all listed in full (no cap);", message)
+        self.assertIn("Set workstreams_in_view to 10 (about 62 tokens)", message)
+        self.assertIn("archive 2 workstreams (about 74 tokens)", message)
+
+    def test_token_budget_lever_says_when_build_index_cannot_run(self) -> None:
+        # No wiki/events: build-index fails loud on a wiki outside the
+        # kit's contract, and the finding still reports the overrun.
+        self._budgets("orientation_index_tokens = 200\n")
+        self.write("workstreams/stream-01.md", WORKSTREAM_OK)
+        self.write("CLAUDE.local.md", "x" * 1200 + "\n")
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertTrue(result.failed)
+        message = result.findings[0].message
+        self.assertIn("estimates 301 tokens", message)
+        self.assertIn("Lever unavailable: build-index exited 1", message)
+
+    def test_token_budget_other_surfaces_carry_no_lever(self) -> None:
+        self.write("workstreams/huge.md", WORKSTREAM_OK + "x" * 20000 + "\n")
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertNotIn("Lever", result.findings[0].message)
+
+    def test_token_budget_covers_nested_entity_pages(self) -> None:
+        self.write("wiki/entities/people/alex.md", "# Alex\n" + "x" * 20000 + "\n")
+        self.write("wiki/entities/widget.md", "# Widget\n")
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertTrue(result.failed)
+        self.assertIn("entity page", result.findings[0].message)
+        self.assertIn("people/alex.md", result.findings[0].path or "")
+        self.assertIn("2 surfaces checked", result.summary)
 
     def test_token_budget_silent_when_no_memory_index_exists(self) -> None:
         self.write("CLAUDE.local.md", "small\n")

@@ -271,6 +271,7 @@ class JsonSurfaceTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name).resolve() / "wiki"
         (self.root / "workstreams").mkdir(parents=True)
+        (self.root / "wiki" / "events").mkdir(parents=True)
         (self.root / "wiki.toml").write_text(WIKI_TOML, encoding="utf-8")
         long_next = "- **Mike: " + "decide " * 20 + "**"
         (self.root / "workstreams" / "wordy.md").write_text(

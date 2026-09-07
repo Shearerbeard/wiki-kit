@@ -186,6 +186,12 @@ def main():
         "long_tags is a list (the garden's curation signal for long tags)",
         isinstance(d.get("long_tags"), list),
     )
+    total, passed = count_check(
+        total,
+        passed,
+        "forefront reports what the tree lists in full (the doctor's lever reads it)",
+        isinstance(d.get("forefront"), dict) and "listed_in_full" in d["forefront"],
+    )
 
     print("\n=== Scenario F: Archival protection ===")
     for name in parked_names:

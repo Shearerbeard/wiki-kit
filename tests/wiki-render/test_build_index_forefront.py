@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -263,6 +264,63 @@ class DefaultForefrontTest(unittest.TestCase):
         self.assertNotIn("NOT IN THE FOREFRONT", tree)
         self.assertEqual(tree.count("main @ abc1234"), 9)
 
+    def json(self) -> dict[str, Any]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(build_index.main(["--wiki", str(self.root), "--json"]), 0)
+        return json.loads(out.getvalue())
+
+    def test_json_reports_the_forefront_facts(self) -> None:
+        self.assertEqual(
+            self.json()["forefront"],
+            {
+                "cap": 8,
+                "pinned": [],
+                "listed_in_full": 8,
+                "collapsed": 1,
+                "full_entry_tokens": build_index.FULL_ENTRY_TOKENS,
+                "collapsed_row_tokens": build_index.COLLAPSED_ROW_TOKENS,
+            },
+        )
+
+    def test_json_forefront_counts_pins_above_the_cap(self) -> None:
+        self.write_config("\n[budgets]\nworkstreams_in_view = 2\n")
+        _write_handoff(
+            self.root / "wiki" / "events",
+            "2026-07-20T00:00:00Z",
+            ["stream-01", "stream-02", "stream-03"],
+        )
+        facts = self.json()["forefront"]
+        self.assertEqual(facts["cap"], 2)
+        self.assertEqual(facts["pinned"], ["stream-01", "stream-02", "stream-03"])
+        self.assertEqual(facts["listed_in_full"], 3)
+        self.assertEqual(facts["collapsed"], 6)
+        # A pinned name with no active page is not counted as listed.
+        _write_handoff(self.root / "wiki" / "events", "2026-07-21T00:00:00Z", ["ghost"])
+        facts = self.json()["forefront"]
+        self.assertEqual((facts["pinned"], facts["listed_in_full"]), ([], 2))
+
+    def test_json_forefront_with_no_cap_lists_everything(self) -> None:
+        self.write_config("\n[budgets]\nworkstreams_in_view = 0\n")
+        facts = self.json()["forefront"]
+        self.assertEqual(
+            (facts["cap"], facts["listed_in_full"], facts["collapsed"]), (None, 9, 0)
+        )
+
+    def test_json_forefront_names_the_pins_with_no_cap(self) -> None:
+        # An uncapped tree lists everything, and the pins are still
+        # reported: a cap proposed from here must not go below them.
+        self.write_config("\n[budgets]\nworkstreams_in_view = 0\n")
+        _write_handoff(
+            self.root / "wiki" / "events",
+            "2026-07-20T00:00:00Z",
+            ["stream-02", "stream-05"],
+        )
+        facts = self.json()["forefront"]
+        self.assertEqual(facts["pinned"], ["stream-02", "stream-05"])
+        self.assertEqual((facts["listed_in_full"], facts["collapsed"]), (9, 0))
+        self.assertNotIn("NOT IN THE FOREFRONT", self.render())
+
     def test_missing_event_store_fails_loud(self) -> None:
         import wiki_event
 
@@ -275,48 +333,42 @@ class DefaultForefrontTest(unittest.TestCase):
         self.assertIn("events directory", str(caught.exception))
 
 
+def _write_handoff(events_dir: Path, stamp: str, primary: list[str]) -> None:
+    import wiki_event
+
+    event = {
+        "event_id": wiki_event.uuid7(),
+        "event_type": "handoff",
+        "schema_version": 2,
+        "timestamp_utc": stamp,
+        "tool": "manual",
+        "status": "pending_garden",
+        "summary": "handoff",
+        "repo": {"name": "widget", "branch": "main", "sha": "abc1234"},
+        "sources": [],
+        "workstream_state": {
+            "current_state": ["s"],
+            "what_was_done": ["d"],
+            "next": ["n"],
+            "blockers": [],
+            "continuation_context": "c",
+        },
+        "proposed_workstreams": [
+            {"name": name, "relationship": "primary", "proposed_action": "u"}
+            for name in primary
+        ]
+        + [{"name": "side", "relationship": "related", "proposed_action": "u"}],
+    }
+    wiki_event.validate_event(event)
+    wiki_event.write_event(events_dir, event)
+
+
 class LatestHandoffTargetsTest(unittest.TestCase):
     def test_newest_handoff_names_the_baton(self) -> None:
-        import wiki_event
-
         with tempfile.TemporaryDirectory() as tmp:
             events_dir = Path(tmp) / "wiki" / "events"
-            for stamp, name, ms in (
-                ("2026-07-01T00:00:00Z", "older", 1),
-                ("2026-07-02T00:00:00Z", "baton", 2),
-            ):
-                event = {
-                    "event_id": wiki_event.uuid7(),
-                    "event_type": "handoff",
-                    "schema_version": 2,
-                    "timestamp_utc": stamp,
-                    "tool": "manual",
-                    "status": "pending_garden",
-                    "summary": f"handoff {ms}",
-                    "repo": {"name": "widget", "branch": "main", "sha": "abc1234"},
-                    "sources": [],
-                    "workstream_state": {
-                        "current_state": ["s"],
-                        "what_was_done": ["d"],
-                        "next": ["n"],
-                        "blockers": [],
-                        "continuation_context": "c",
-                    },
-                    "proposed_workstreams": [
-                        {
-                            "name": name,
-                            "relationship": "primary",
-                            "proposed_action": "u",
-                        },
-                        {
-                            "name": "side",
-                            "relationship": "related",
-                            "proposed_action": "u",
-                        },
-                    ],
-                }
-                wiki_event.validate_event(event)
-                wiki_event.write_event(events_dir, event)
+            _write_handoff(events_dir, "2026-07-01T00:00:00Z", ["older"])
+            _write_handoff(events_dir, "2026-07-02T00:00:00Z", ["baton"])
             self.assertEqual(build_index.latest_handoff_targets(events_dir), {"baton"})
 
     def test_empty_store_pins_nothing(self) -> None:

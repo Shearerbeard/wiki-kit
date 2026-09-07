@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import unquote
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -59,6 +59,7 @@ from wiki_frontmatter import (  # noqa: E402
     validate_workstream_body,
 )
 from wiki_render import (  # noqa: E402
+    DEFAULT_BUILD_INDEX_SCRIPT,
     render_log,
 )
 
@@ -364,42 +365,182 @@ def estimated_tokens(path: Path) -> int:
     return estimate_tokens(path.read_bytes())
 
 
+# A lever names what brings an over-threshold surface back under it,
+# given the measured tokens and the threshold crossed.
+Lever = Callable[[int, int], str]
+
+
 def budget_finding(
-    name: str, path: Path, budget: Budget, tokens: int
+    name: str, path: Path, budget: Budget, tokens: int, lever: Lever | None = None
 ) -> Finding | None:
+    if tokens > budget.hard:
+        make, threshold = fail, budget.hard
+    elif tokens > budget.warn:
+        make, threshold = warn, budget.warn
+    else:
+        return None
     message = (
         f"{budget.label} estimates {tokens} tokens; "
         f"warn={budget.warn}, hard={budget.hard}"
     )
-    if tokens > budget.hard:
-        return fail(name, message, str(path))
-    if tokens > budget.warn:
-        return warn(name, message, str(path))
-    return None
+    if lever is not None:
+        message = f"{message}. {lever(tokens, threshold)}"
+    return make(name, message, str(path))
+
+
+class Forefront(NamedTuple):
+    """What the orientation tree lists in full, as build-index reports
+    it: the renderer's own selection, so the lever sizes against the
+    tree that is rendered rather than against the cap."""
+
+    active: int
+    cap: int | None
+    listed: int
+    pinned: int
+    full_entry_tokens: int
+    collapsed_row_tokens: int
+
+
+class BuildIndexError(Exception):
+    """build-index exited nonzero, so there are no forefront facts."""
+
+
+def read_forefront(root: Path) -> Forefront:
+    command = [sys.executable, str(DEFAULT_BUILD_INDEX_SCRIPT), "--wiki", str(root)]
+    result = subprocess.run(
+        [*command, "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        raise BuildIndexError(
+            f"build-index exited {result.returncode}"
+            + (f": {detail[-1]}" if detail else "")
+        )
+    data = json.loads(result.stdout)
+    facts = data["forefront"]
+    return Forefront(
+        active=data["summary"]["active"],
+        cap=facts["cap"],
+        listed=facts["listed_in_full"],
+        pinned=len(facts["pinned"]),
+        full_entry_tokens=facts["full_entry_tokens"],
+        collapsed_row_tokens=facts["collapsed_row_tokens"],
+    )
+
+
+def orientation_lever(tokens: int, threshold: int, forefront: Forefront) -> str:
+    """The two actions that bring an orientation of `tokens` back under
+    `threshold`, each sized from the tree's cost model: set
+    workstreams_in_view lower so more entries collapse to rows, or
+    archive workstreams so rows go. The view floors at 1 (0 spells no
+    cap) or at the count the newest handoff pins, whichever is higher.
+    Parking is no lever: a parked page still renders as a row."""
+    over = tokens - threshold
+    if over <= 0:
+        raise ValueError(f"orientation_lever needs an overrun, got {over}")
+    f = forefront
+    if f.cap is None:
+        view = "all listed in full (no cap)"
+    elif f.listed == f.active:
+        view = f"all listed in full (workstreams_in_view {f.cap})"
+    else:
+        view = f"{f.listed} listed in full (workstreams_in_view {f.cap})"
+    if f.pinned:
+        view += f", {f.pinned} pinned by the newest handoff"
+    costs = (
+        f"Lever: {f.active} active, {view}; a full entry costs about "
+        f"{f.full_entry_tokens} tokens and a collapsed row about "
+        f"{f.collapsed_row_tokens}."
+    )
+    if f.active == 0:
+        return (
+            f"{costs} No active workstreams to collapse or archive: the "
+            "Quickstart and the fixed sections carry the overrun."
+        )
+    per_lowered = f.full_entry_tokens - f.collapsed_row_tokens
+    floor = max(1, f.pinned)
+    lower_by = min(max(f.listed - floor, 0), -(-over // per_lowered))
+    archive = min(f.active, -(-over // f.collapsed_row_tokens))
+
+    def saving(amount: int) -> str:
+        short = f", short of the {over} over" if amount < over else ""
+        return f"(about {amount} tokens{short})"
+
+    if lower_by > 0:
+        lower_text = (
+            f"Set workstreams_in_view to {f.listed - lower_by} "
+            f"{saving(lower_by * per_lowered)}"
+        )
+    elif f.pinned > 1:
+        lower_text = (
+            f"workstreams_in_view is at its floor of {floor} "
+            f"({f.pinned} pinned by the newest handoff)"
+        )
+    else:
+        lower_text = "workstreams_in_view is at its floor of 1 (0 means no cap)"
+    return (
+        f"{costs} {lower_text}, or archive {archive} workstreams "
+        f"{saving(archive * f.collapsed_row_tokens)}."
+    )
+
+
+def orientation_budget_lever(ctx: DoctorContext) -> Lever:
+    def lever(tokens: int, threshold: int) -> str:
+        try:
+            forefront = read_forefront(ctx.repo_root)
+        except BuildIndexError as exc:
+            # The overrun is still reported; the render-log and
+            # validate-workstreams checks own whatever stopped build-index.
+            return f"Lever unavailable: {exc}."
+        return orientation_lever(tokens, threshold, forefront)
+
+    return lever
+
+
+class BudgetedSurface(NamedTuple):
+    path: Path
+    budget: Budget
+    lever: Lever | None
 
 
 def check_token_budgets(ctx: DoctorContext) -> CheckOutcome:
     name = "token-budgets"
     findings: list[Finding] = []
     budgets = token_budgets(ctx.config)
-    surfaces: list[tuple[Path, Budget]] = []
+    surfaces: list[BudgetedSurface] = []
     orientation = ctx.repo_root / "CLAUDE.local.md"
     if orientation.exists():
-        surfaces.append((orientation, budgets["orientation_index"]))
+        surfaces.append(
+            BudgetedSurface(
+                orientation, budgets["orientation_index"], orientation_budget_lever(ctx)
+            )
+        )
     # The memory index is optional harness state: budget it when present,
     # say nothing when a deployment has none.
     if ctx.memory_index.exists():
-        surfaces.append((ctx.memory_index, budgets["memory_index"]))
+        surfaces.append(
+            BudgetedSurface(ctx.memory_index, budgets["memory_index"], None)
+        )
     surfaces.extend(
-        (path, budgets["workstream"])
+        BudgetedSurface(path, budgets["workstream"], None)
         for path in workstream_validation_files(ctx.repo_root)
     )
+    # Every page under wiki/entities/, nested or not: the same scope the
+    # link check reads.
     surfaces.extend(
-        (path, budgets["entity"])
-        for path in sorted((ctx.repo_root / "wiki" / "entities").glob("*.md"))
+        BudgetedSurface(path, budgets["entity"], None)
+        for path in sorted((ctx.repo_root / "wiki" / "entities").glob("**/*.md"))
     )
-    for path, budget in surfaces:
-        finding = budget_finding(name, path, budget, estimated_tokens(path))
+    for surface in surfaces:
+        finding = budget_finding(
+            name,
+            surface.path,
+            surface.budget,
+            estimated_tokens(surface.path),
+            surface.lever,
+        )
         if finding is not None:
             findings.append(finding)
     return outcome(name, findings, f"{len(surfaces)} surfaces checked")

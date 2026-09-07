@@ -284,6 +284,13 @@ def _truncate(text: str, limit: int = TREE_FIELD_MAX_CHARS) -> str:
 # lines a full entry costs, which is the point of collapsing.
 OVERFLOW_DETAIL_MAX_CHARS = 60
 
+# The orientation's cost model in estimated tokens, measured on a
+# deployment with thirty active workstreams: one workstream listed in
+# full (its three lines and the spacer) and one collapsed row. --json
+# carries them so the doctor sizes its lever against this renderer.
+FULL_ENTRY_TOKENS = 68
+COLLAPSED_ROW_TOKENS = 37
+
 
 def latest_handoff_targets(events_dir: Path) -> set[str]:
     """The baton: the workstreams the newest handoff event proposes to
@@ -332,17 +339,37 @@ def select_forefront(
     return forefront, overflow
 
 
+def active_by_recency(streams: list[Workstream]) -> list[Workstream]:
+    return sorted(
+        [s for s in streams if s.status == "active"],
+        key=lambda s: s.last_updated,
+        reverse=True,
+    )
+
+
+def forefront_facts(
+    streams: list[Workstream], target: int | None, pinned: frozenset[str]
+) -> dict:
+    """What the tree lists in full and why, so the doctor's lever sizes
+    against the selection this renderer makes rather than the cap."""
+    forefront, overflow = select_forefront(active_by_recency(streams), target, pinned)
+    return {
+        "cap": target,
+        "pinned": sorted(s.name for s in forefront if s.name in pinned),
+        "listed_in_full": len(forefront),
+        "collapsed": len(overflow),
+        "full_entry_tokens": FULL_ENTRY_TOKENS,
+        "collapsed_row_tokens": COLLAPSED_ROW_TOKENS,
+    }
+
+
 def build_tree(
     streams: list[Workstream],
     workstreams_dir: Path,
     forefront_target: int | None = None,
     pinned: frozenset[str] = frozenset(),
 ) -> str:
-    all_active = sorted(
-        [s for s in streams if s.status == "active"],
-        key=lambda s: s.last_updated,
-        reverse=True,
-    )
+    all_active = active_by_recency(streams)
     forefront, overflow = select_forefront(all_active, forefront_target, pinned)
     board_epics = {s.epic for s in forefront if s.tier == "board-page"}
     # Satellites nest under their epic's board page when both are in the
@@ -489,6 +516,12 @@ def main(argv: list[str] | None = None) -> int:
         for e in errors:
             print(f"warning: {e}", file=sys.stderr)
 
+    target = config.budgets.workstreams_in_view
+    # The pins are read whether or not a cap is set: an uncapped tree
+    # lists everything anyway, but --json's forefront must name them so
+    # the doctor's lever never proposes a cap below the baton.
+    pinned = frozenset(latest_handoff_targets(root / "wiki" / "events"))
+
     if args.json:
         stale_next = find_stale_next_candidates(streams)
         blocker_prs = extract_blocker_prs(streams)
@@ -539,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
             ],
             "stale_next_candidates": stale_next,
             "long_tags": find_long_tags(streams),
+            "forefront": forefront_facts(streams, target, pinned),
             "blocker_prs": blocker_prs,
             "errors": errors,
             "summary": {
@@ -552,10 +586,6 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(data, indent=2))
     else:
-        target = config.budgets.workstreams_in_view
-        pinned: frozenset[str] = frozenset()
-        if target is not None:
-            pinned = frozenset(latest_handoff_targets(root / "wiki" / "events"))
         print(build_tree(streams, workstreams_dir, target, pinned))
     return 0
 

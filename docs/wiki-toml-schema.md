@@ -282,7 +282,8 @@ stay below its ceiling.
 
 Over its ceiling, each surface class behaves differently. The
 orientation index collapses by count, so the lever is
-`workstreams_in_view` or parking workstreams. Workstream, entity, and
+`workstreams_in_view` or archiving workstreams (a parked page still
+renders as a row). Workstream, entity, and
 memory-index pages are curation signals: the doctor WARNs, then FAILs,
 and never trims a page. The night report trims itself to its ceiling
 on every write. A doctor FAIL on any surface aborts the night runner's
@@ -290,12 +291,15 @@ commit.
 
 How the two headline numbers relate, measured on a deployment with
 thirty active workstreams: a workstream listed in full costs about 68
-tokens and a collapsed row about 31, while the Quickstart, the pending
-line, the recent sessions, and the headings together cost about 510.
-The orientation therefore costs roughly `510 + 68 x in_view + 31 x
-(active - in_view)` plus the machine-local Uncommitted Changes section.
-With 30 active workstreams and 8 in view that is about 2,000 tokens
-against the 3000 ceiling.
+tokens and a collapsed row about 37 (the row's padding dots are two
+bytes each, and the estimator counts bytes), while the Quickstart, the
+pending line, the recent sessions, the parked rows, and the headings
+together cost about 680. The orientation therefore costs roughly `680
++ 68 x in_view + 37 x (active - in_view)` plus the machine-local
+Uncommitted Changes section. With 30 active workstreams and 8 in view
+that is about 2,000 tokens against the 3000 ceiling. The doctor's
+finding on an over-threshold orientation names these two costs beside
+the active and in-view counts and sizes both levers from them.
 
 A deployment with no `[budgets]` table takes every default above.
 Against the Stage 1 defaults that moves four WARN thresholds (memory

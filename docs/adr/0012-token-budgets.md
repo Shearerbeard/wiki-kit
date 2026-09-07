@@ -164,8 +164,9 @@ Option 2. The `[budgets]` table becomes:
     WARN, then FAIL, never trimmed. The doctor's finding on an
     over-ceiling orientation names the lever in workstreams: the active
     count, the in-view count, the measured cost of a full entry (about
-    68 tokens) and a collapsed row (about 31), and the two actions
-    (lower `workstreams_in_view`, or park workstreams).
+    68 tokens) and a collapsed row (about 37), and the two actions
+    (lower `workstreams_in_view`, or archive workstreams; a parked page
+    still renders as a row, so parking is no lever).
   - The night report trims itself to its ceiling on every write,
     including the abort report: the doctor dump to its FAIL and WARN
     lines plus a pointer to `<report_dir>/doctor-<date>.txt`, then the
@@ -210,7 +211,7 @@ Gaps, each with an owner:
 
 Failure modes: an over-ceiling orientation FAILs the doctor and aborts
 the night commit until the forefront is lowered or workstreams are
-parked; a page over its ceiling does the same until curated; a night
+archived; a page over its ceiling does the same until curated; a night
 report still over its ceiling after the full shrink aborts the run with
 that reason, the same abort pass 2 performs today after its
 metrics-only shrink.
