@@ -180,6 +180,13 @@ def main():
             "eval-benchmark" in stale_names,
         )
 
+    total, passed = count_check(
+        total,
+        passed,
+        "long_tags is a list (the garden's curation signal for long tags)",
+        isinstance(d.get("long_tags"), list),
+    )
+
     print("\n=== Scenario F: Archival protection ===")
     for name in parked_names:
         total, passed = count_check(

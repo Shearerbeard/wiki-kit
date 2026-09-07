@@ -34,7 +34,23 @@ from wiki_frontmatter import (  # noqa: E402
     validate_frontmatter,
 )
 
+# A section item enters the tree and the --json surface as a phrase:
+# the list marker, any numbering, and the ** emphasis a page wraps its
+# lead-in with are markup for the page's own renderer, and the tree
+# has none. Inline code is literal: the ** in a `wiki/events/**` glob
+# stays, so the pattern matches a code span first and drops ** only
+# outside one. A span opens with a run of backticks and closes with a
+# run of the same length that touches no other backtick, as CommonMark
+# has it, so ``x ** 2`` and `` `a``b` `` are single spans.
+LIST_MARKER_RE = re.compile(r"^[-*+]\s+")
 NUMBERING_RE = re.compile(r"^\d+\.\s*")
+CODE_OR_EMPHASIS_RE = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)|\*\*")
+
+# The frontmatter blocker and the first Next item are a workstream's tag
+# and Next line in the tree, which caps both at TREE_FIELD_MAX_CHARS and
+# shows the cut. Past this length they read as paragraphs, so --json
+# names them for the garden's curation pass: a signal, never an error.
+TAG_CURATION_MAX_CHARS = 100
 
 
 @dataclass
@@ -61,6 +77,17 @@ class Workstream:
     path: Path
 
 
+def clean_item(text: str) -> str:
+    """One section line as a phrase: the list marker, numbering, and the
+    ** emphasis outside inline code go; what remains is what the tree
+    and --json carry."""
+    text = LIST_MARKER_RE.sub("", text.strip())
+    text = NUMBERING_RE.sub("", text)
+    return CODE_OR_EMPHASIS_RE.sub(
+        lambda m: m.group(0) if m.group(1) else "", text
+    ).strip()
+
+
 def extract_section_items(path: Path, header: str) -> list[str]:
     text = path.read_text()
     in_section = False
@@ -75,8 +102,9 @@ def extract_section_items(path: Path, header: str) -> list[str]:
                 break
             if stripped.startswith("#### "):
                 continue
-            if stripped and stripped not in ("None", "none", "N/A"):
-                items.append(NUMBERING_RE.sub("", stripped).rstrip())
+            item = clean_item(stripped)
+            if item and item not in ("None", "none", "N/A"):
+                items.append(item)
     return items
 
 
@@ -204,6 +232,22 @@ def find_stale_next_candidates(streams: list[Workstream]) -> list[dict]:
     return candidates
 
 
+def find_long_tags(streams: list[Workstream]) -> list[dict]:
+    """Every active or parked workstream whose blocker or first Next item
+    runs past TAG_CURATION_MAX_CHARS, with the field and its length, so
+    the garden can present them for shortening in the page."""
+    return [
+        {"workstream": s.name, "field": field, "length": len(text), "text": text}
+        for s in streams
+        if s.status in ("active", "parked")
+        for field, text in (
+            ("blocker", s.blocker),
+            ("next", s.next_actions[0] if s.next_actions else ""),
+        )
+        if len(text) > TAG_CURATION_MAX_CHARS
+    ]
+
+
 def extract_blocker_prs(streams: list[Workstream]) -> list[dict]:
     pr_re = re.compile(r"#(\d+)")
     blockers = []
@@ -325,9 +369,9 @@ def build_tree(
         connector = "└─" if i == len(active) - 1 else "├─"
         pad = "   " if i == len(active) - 1 else "│  "
         first_next = s.next_actions[0] if s.next_actions else ""
-        tag = (
-            _truncate(s.blocker) if s.blocker else first_next[:40] if first_next else ""
-        )
+        # The tag is the blocker or nothing; the Next line below carries
+        # the next step once.
+        tag = _truncate(s.blocker) if s.blocker else ""
         if s.tier == "board-page":
             label = f"{s.name} [epic]"
         elif s.tier == "satellite" and s.epic:
@@ -335,7 +379,7 @@ def build_tree(
         else:
             label = s.name
         dots = "·" * max(1, 40 - len(label))
-        lines.append(f"{connector} {label} {dots} {tag}")
+        lines.append(f"{connector} {label} {dots} {tag}".rstrip())
         lines.append(f"{pad}{s.branch} @ {s.sha}")
         lines.append(
             f"{pad}Next: {_truncate(first_next)}"
@@ -349,15 +393,9 @@ def build_tree(
             sconn = "└─" if sat_last else "├─"
             spad = "   " if sat_last else "│  "
             sat_next = sat.next_actions[0] if sat.next_actions else ""
-            sat_tag = (
-                _truncate(sat.blocker)
-                if sat.blocker
-                else sat_next[:40]
-                if sat_next
-                else ""
-            )
+            sat_tag = _truncate(sat.blocker) if sat.blocker else ""
             sdots = "·" * max(1, 37 - len(sat.name))
-            lines.append(f"{pad}{sconn} {sat.name} {sdots} {sat_tag}")
+            lines.append(f"{pad}{sconn} {sat.name} {sdots} {sat_tag}".rstrip())
             lines.append(f"{pad}{spad}{sat.branch} @ {sat.sha}")
             lines.append(
                 f"{pad}{spad}Next: {_truncate(sat_next)}"
@@ -500,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 if s.is_thin
             ],
             "stale_next_candidates": stale_next,
+            "long_tags": find_long_tags(streams),
             "blocker_prs": blocker_prs,
             "errors": errors,
             "summary": {

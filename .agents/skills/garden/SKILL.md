@@ -144,6 +144,7 @@ Do the following in order:
 
 4. **Detect stale Next items (mechanical).** Run: `uv run --project {{KIT_ROOT}} {{KIT_ROOT}}/scripts/build-index.py --json`
    Read the JSON. For each active stream, compare its `### Next` bullets against `### What Was Done` entries in other workstream files. Flag any Next item that appears word-for-word (or near-match) in another file's completed work as "possibly done." Present these to the user — do not auto-remove.
+   The same JSON carries `long_tags`: each active or parked workstream whose frontmatter `blocker` or first `### Next` item runs past 100 characters. The tree shows a full entry's blocker and first Next cut at 85 characters, a collapsed row's at 60, and a parked page's blocker alone, so a long one reads as a sentence that stops early wherever it appears. Present these beside the possibly-done items for shortening in the page itself; the fix is a shorter phrase, never a wider cap.
 
 5. **Propose workstream merges (judgment — always confirm).** Read at most the 5 most recently updated workstream files. If two files describe the same goal from different angles (e.g., they share branches, PRs, or overlapping Next items), propose merging them. Show the user both files side by side and ask which to keep as primary. **Never merge without explicit user confirmation.**
 
@@ -191,7 +192,7 @@ Do the following in order:
    `uv run --project {{KIT_ROOT}} {{KIT_ROOT}}/scripts/build-index.py --json`
    For each active workstream in the JSON output:
    - Read the workstream file's curated `### Next` first bullet.
-   - Compare it to `next_actions[0]` from the JSON. They must match (both read the same file). If they differ, the file was modified between curation and render — flag loudly.
+   - Compare it to `next_actions[0]` from the JSON after the extractor's normalization. The extractor drops the bullet marker and any numbering, then drops `**` emphasis that sits outside inline code, so a first bullet of `- **Ship it**` reads `Ship it` in the JSON; a bullet of `None`, `none`, or `N/A` is omitted. Any other difference means the file was modified between curation and render: flag loudly.
    Then check the Quickstart in the rendered `CLAUDE.local.md`:
    - For any workstream mentioned in the Quickstart, verify its branch/sha claims match the workstream file's frontmatter. A stale commit hash (e.g., Quickstart says `39ea5c60` but frontmatter says `61e80dc3`) means the Quickstart was not updated in step 7.
    - If any Quickstart claim contradicts a curated section, list the specific discrepancies.
