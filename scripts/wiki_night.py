@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -72,8 +72,45 @@ from wiki_garden import (  # noqa: E402
 )
 from wiki_gh_sweep import render_summary  # noqa: E402
 
-SWEEP_FINDINGS_TOKEN_BUDGET = 1500
-SWEEP_FINDINGS_CHAR_BUDGET = SWEEP_FINDINGS_TOKEN_BUDGET * 4
+DOCTOR_DUMP_NAME = "doctor-{date}.txt"
+DOCTOR_LINE_PREFIXES = ("FAIL", "WARN")
+DOCTOR_TAIL_LINES = 5
+# What the report gives up, in order, when a write would pass the
+# [budgets] night_report_tokens ceiling. The doctor's full output is
+# always in its dump file, the sweep's in its JSON.
+SHRINK_STEPS = ("doctor WARN lines", "sweep entries", "step timings")
+
+
+def sweep_findings_cap(ceiling: int) -> int:
+    """The sweep section's share of the report ceiling: three eighths,
+    the 1500 tokens the section had when the report ceiling was 4000."""
+    return ceiling * 3 // 8
+
+
+class DoctorSummary(NamedTuple):
+    text: str
+    headline: str
+
+
+def doctor_summary(dump: str, pointer: str, exit_code: int) -> DoctorSummary:
+    """What the report carries of the doctor's output: the check counts,
+    every FAIL and WARN line, and where the full output is. A nonzero
+    exit with no verdict line at all means the doctor did not run to
+    the end, so the dump's tail stands in for the verdict."""
+    lines = dump.splitlines()
+    kept = [line for line in lines if line.lstrip().startswith(DOCTOR_LINE_PREFIXES)]
+    counts = {
+        prefix: sum(1 for line in lines if line.startswith(prefix))
+        for prefix in ("PASS", *DOCTOR_LINE_PREFIXES)
+    }
+    counted = ", ".join(f"{count} {prefix}" for prefix, count in counts.items())
+    headline = f"checks: {counted}; full output: {pointer}"
+    if not kept and exit_code != 0:
+        tail = lines[-DOCTOR_TAIL_LINES:]
+        last = tail[-1] if tail else "no output"
+        headline = f"doctor exited {exit_code}: {last}; full output: {pointer}"
+        kept = tail
+    return DoctorSummary("\n".join([headline, *kept]), headline)
 
 
 @dataclass
@@ -127,6 +164,8 @@ class NightReport:
     # The report's own estimated size, recorded on every write so growth
     # shows as a trend under Metrics; nothing acts on it.
     report_tokens: int | None = None
+    # How many SHRINK_STEPS the last write applied to fit the ceiling.
+    shrink_level: int = 0
     steps: list[StepResult] = field(default_factory=list)
     lock_token: str | None = None
     abort_reason: str = ""
@@ -214,13 +253,15 @@ class NightRunner:
             pending = self._count_pending()
             self.report.metrics["pending_count"] = pending
             self.report.outcome = RunOutcome.CLEAN
-            self._write_report()
-            return 0
+            overrun = self._write_report_checked()
+            if not overrun:
+                return 0
+            self.report.abort_reason = f"report-only failed: {overrun}"
         except Exception as exc:
             self.report.abort_reason = f"report-only failed: {exc}"
-            self.report.outcome = RunOutcome.ABORTED
-            self._write_report()
-            return 1
+        self.report.outcome = RunOutcome.ABORTED
+        self._write_report()
+        return 1
 
     def _run_full(self) -> int:
         # Step 0: pre-flight
@@ -304,7 +345,12 @@ class NightRunner:
                     self.report.abort_reason = f"commit failed: {result.error}"
                     return 1
             else:
-                self._write_report()
+                # The last write carries the step records pass 2 could not
+                # see, so it answers to the ceiling the way pass 2 did.
+                overrun = self._write_report_checked()
+                if overrun:
+                    self.report.abort_reason = overrun
+                    return 1
 
             return 0
         finally:
@@ -620,30 +666,45 @@ class NightRunner:
             text=True,
             cwd=self.root,
         )
-        output = result.stdout.strip()
-        stderr = result.stderr.strip()
-        self.report.doctor_result = output or stderr
+        dump = "\n".join(
+            part for part in (result.stdout.strip(), result.stderr.strip()) if part
+        )
+        # The full output lives only here; the report carries a bounded
+        # summary of it, so a noisy doctor cannot push the report past
+        # its ceiling on the very run whose report says why it aborted.
+        dump_path = self.report_path.parent / DOCTOR_DUMP_NAME.format(
+            date=self.report.date
+        )
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_path.write_text(dump + "\n", encoding="utf-8")
+        pointer = f"{self.config.night.report_dir}/{dump_path.name}"
+        summary = doctor_summary(dump, pointer, result.returncode)
+        self.report.doctor_result = summary.text
         self.report.doctor_clean = result.returncode == 0
         if result.returncode != 0:
-            return "", output or stderr
-        return output, ""
+            return summary.text, summary.headline
+        return summary.text, ""
 
     def _update_report_pass2(self) -> tuple[str, str]:
-        ceiling = self.config.budgets.night_report.hard
+        overrun = self._write_report_checked()
+        if overrun:
+            return "", overrun
+        return f"report pass 2 written ({self.report.report_tokens} tokens est.)", ""
+
+    def _write_report_checked(self) -> str:
+        """Write the report and name the overrun when it is still over
+        the ceiling after the full shrink; the empty string means it
+        fits. Every write that can end a run successfully goes through
+        here, so exit 0 never leaves an over-ceiling report behind."""
         self._write_report()
         tokens = self._estimate_report_tokens()
-        if tokens > ceiling:
-            self.report.metrics["report_truncated"] = True
-            self.report.metrics.pop("step_durations", None)
-            self._write_report()
-            tokens = self._estimate_report_tokens()
+        ceiling = self.config.budgets.night_report.hard
         if tokens > ceiling:
             return (
-                "",
-                "night report exceeds hard token budget after metrics "
-                f"truncation: {tokens} > {ceiling}",
+                "night report exceeds hard token budget after the full "
+                f"shrink: {tokens} > {ceiling}"
             )
-        return f"report pass 2 written ({tokens} tokens est.)", ""
+        return ""
 
     def _estimate_report_tokens(self) -> int:
         return estimate_tokens(self.report_path.read_bytes())
@@ -728,11 +789,23 @@ class NightRunner:
         return commit_result.stdout.strip(), ""
 
     def _render_report(self) -> str:
-        """The report text with its own estimated size recorded under
-        Metrics. The size line is part of the text it measures, so the
-        format repeats until the recorded number matches the text; one
-        more digit can move the estimate by at most one token, so it
-        settles within a few rounds."""
+        """The report text at the first shrink level that fits the
+        ceiling, with its own estimated size recorded under Metrics.
+        Past the last level the text is written over the ceiling: the
+        abort report cannot abort, and pass 2 reports the overrun."""
+        ceiling = self.config.budgets.night_report.hard
+        for level in range(len(SHRINK_STEPS) + 1):
+            self.report.shrink_level = level
+            text = self._settle_report()
+            if estimate_tokens(text.encode("utf-8")) <= ceiling:
+                break
+        return text
+
+    def _settle_report(self) -> str:
+        """The size line is part of the text it measures, so the format
+        repeats until the recorded number matches the text; one more
+        digit can move the estimate by at most one token, so it settles
+        within a few rounds."""
         text = self._format_report()
         for _ in range(4):
             tokens = estimate_tokens(text.encode("utf-8"))
@@ -781,49 +854,72 @@ class NightRunner:
             sequence += 1
         return candidate
 
-    def _truncate_sweep_findings(self) -> str:
+    def _truncate_sweep_findings(self, byte_budget: int) -> str:
+        """The sweep section within `byte_budget` bytes. Every tier header
+        and blank line stays; entries fill what is left once each tier
+        has room reserved for the pointer line that replaces its cut
+        entries, so the section never passes the budget unless the
+        budget cannot hold even the headers and pointers."""
         text = self.report.sweep_findings or "_(not run)_"
-        if len(text) <= SWEEP_FINDINGS_CHAR_BUDGET:
+        if len(text.encode("utf-8")) <= byte_budget:
             return text
         json_path = (
             f"{self.config.night.report_dir}/gh-sweep-{self.report.date}.json"
         )
+
+        def pointer(tier: str, count: int) -> str:
+            return f"  ... and {count} more {tier} entries — full sweep: {json_path}"
+
+        def line_bytes(line: str) -> int:
+            return len(line.encode("utf-8")) + 1
+
+        def is_header(line: str) -> bool:
+            return line.startswith(("TIER ", "UNRESOLVABLE", "Staleness sweep:"))
+
         all_lines = text.split("\n")
-        kept: list[str] = []
-        char_total = 0
-        overflow_per_tier: dict[str, int] = {}
+        tier_of: list[str] = []
+        entries_per_tier: dict[str, int] = {}
+        overhead = 0
         current_tier = ""
         for line in all_lines:
-            is_tier_header = (
-                line.startswith("TIER ")
-                or line.startswith("UNRESOLVABLE")
-                or line.startswith("Staleness sweep:")
-            )
-            if is_tier_header:
+            if is_header(line):
                 current_tier = line.split(":")[0] if ":" in line else line
+                overhead += line_bytes(line)
+            elif line.strip() == "":
+                overhead += line_bytes(line)
+            elif current_tier:
+                entries_per_tier[current_tier] = (
+                    entries_per_tier.get(current_tier, 0) + 1
+                )
+            tier_of.append(current_tier)
+        if entries_per_tier:
+            overhead += 1 + sum(
+                line_bytes(pointer(tier, count))
+                for tier, count in entries_per_tier.items()
+            )
+        entry_budget = byte_budget - overhead
+
+        kept: list[str] = []
+        byte_total = 0
+        overflow_per_tier: dict[str, int] = {}
+        for line, tier in zip(all_lines, tier_of, strict=True):
+            if is_header(line) or line.strip() == "":
                 kept.append(line)
-                char_total += len(line) + 1
-                continue
-            if line.strip() == "":
+            elif byte_total + line_bytes(line) <= entry_budget:
                 kept.append(line)
-                continue
-            if char_total + len(line) + 1 <= SWEEP_FINDINGS_CHAR_BUDGET:
-                kept.append(line)
-                char_total += len(line) + 1
-            else:
-                if current_tier:
-                    overflow_per_tier[current_tier] = (
-                        overflow_per_tier.get(current_tier, 0) + 1
-                    )
+                byte_total += line_bytes(line)
+            elif tier:
+                overflow_per_tier[tier] = overflow_per_tier.get(tier, 0) + 1
         if overflow_per_tier:
             kept.append("")
-            for tier, count in overflow_per_tier.items():
-                kept.append(
-                    f"  ... and {count} more {tier} entries — full sweep: {json_path}"
-                )
+            kept.extend(
+                pointer(tier, count) for tier, count in overflow_per_tier.items()
+            )
         return "\n".join(kept)
 
     def _format_report(self) -> str:
+        level = self.report.shrink_level
+        ceiling = self.config.budgets.night_report.hard
         lines: list[str] = []
         lines.append(f"# Night run report — {self.report.date}")
         lines.append("")
@@ -860,7 +956,8 @@ class NightRunner:
             lines.append("")
 
         lines.append("## Sweep findings")
-        lines.append(self._truncate_sweep_findings())
+        sweep_bytes = 0 if level >= 2 else sweep_findings_cap(ceiling) * 4
+        lines.append(self._truncate_sweep_findings(sweep_bytes))
         lines.append("")
 
         lines.append("## Memory triage")
@@ -869,9 +966,16 @@ class NightRunner:
 
         lines.append("## Doctor")
         if self.report.doctor_result:
+            doctor_lines = self.report.doctor_result.splitlines()
+            if level >= 1:
+                doctor_lines = [
+                    line
+                    for line in doctor_lines
+                    if not line.lstrip().startswith("WARN")
+                ]
             lines.append(f"**Clean:** {self.report.doctor_clean}")
             lines.append("```")
-            lines.append(self.report.doctor_result)
+            lines.extend(doctor_lines)
             lines.append("```")
         else:
             lines.append("_(not run)_")
@@ -886,10 +990,11 @@ class NightRunner:
             lines.append(f"- Applied: {len(self.report.applied_events)}")
             lines.append(f"- Manual: {len(self.report.manual_actions)}")
             lines.append(f"- Reconciled: {len(self.report.reconciled_events)}")
-            for name, dur in self.report.metrics.get("step_durations", {}).items():
-                lines.append(f"- {name}: {dur:.1f}s")
-            if self.report.metrics.get("report_truncated"):
-                lines.append("- Report truncated (over budget)")
+            if level < 3:
+                durations = self.report.metrics.get("step_durations", {})
+                lines.extend(f"- {name}: {dur:.1f}s" for name, dur in durations.items())
+        if level:
+            lines.append(f"- Report shrunk to fit: {', '.join(SHRINK_STEPS[:level])}")
         if self.report.report_tokens is not None:
             lines.append(f"- Report tokens (est.): {self.report.report_tokens}")
         lines.append("")

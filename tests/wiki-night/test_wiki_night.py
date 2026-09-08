@@ -506,7 +506,7 @@ class NightRunnerTest(unittest.TestCase):
         )
         self.assertIn("report pass 2 failed", runner.report.abort_reason)
 
-    def test_report_pass_two_truncates_metrics_to_fit_hard_budget(self) -> None:
+    def test_report_pass_two_drops_step_timings_last_to_fit_the_ceiling(self) -> None:
         runner = self._make_runner(scheduled=True)
         runner.report.metrics["step_durations"] = {
             f"verbose-step-{index:04d}": 1.0 for index in range(800)
@@ -516,30 +516,45 @@ class NightRunnerTest(unittest.TestCase):
 
         self.assertEqual(error, "")
         self.assertIn("report pass 2 written", output)
-        self.assertTrue(runner.report.metrics["report_truncated"])
-        self.assertNotIn("step_durations", runner.report.metrics)
+        self.assertEqual(runner.report.shrink_level, len(wiki_night.SHRINK_STEPS))
+        text = runner.report_path.read_text(encoding="utf-8")
+        self.assertNotIn("verbose-step-", text)
+        self.assertIn(
+            "- Report shrunk to fit: doctor WARN lines, sweep entries, step timings\n",
+            text,
+        )
         self.assertLessEqual(
             runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
         )
 
-    def test_report_pass_two_rejects_report_still_over_hard_budget(self) -> None:
+    def _applied_events(self, count: int, summary: str) -> list[object]:
+        # Applied events are report content no shrink step touches, so
+        # enough of them hold the report over the ceiling at every level.
+        return [
+            wiki_night.AppliedReportEvent(f"event-{n:04d}", summary, "stream")
+            for n in range(count)
+        ]
+
+    def test_report_pass_two_rejects_a_report_still_over_after_the_full_shrink(
+        self,
+    ) -> None:
         runner = self._make_runner(scheduled=True)
         ceiling = runner.config.budgets.night_report.hard
-        runner.report.doctor_result = "x" * (ceiling * 8)
+        runner.report.applied_events = self._applied_events(ceiling // 10, "x" * 60)
 
         output, error = runner._update_report_pass2()
 
         self.assertEqual(output, "")
-        self.assertIn("exceeds hard token budget", error)
-        self.assertGreater(
-            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
-        )
+        self.assertIn("exceeds hard token budget after the full shrink", error)
+        self.assertEqual(runner.report.shrink_level, len(wiki_night.SHRINK_STEPS))
+        self.assertGreater(runner._estimate_report_tokens(), ceiling)
 
     def test_report_budget_measures_bytes_not_characters(self) -> None:
-        # 6000 three-byte characters: a character count reads 1500 tokens
-        # and would pass; the byte estimate reads 4500 and must not.
+        # 6000 three-byte characters across the applied events: a
+        # character count reads under 2000 tokens and would pass; the
+        # byte estimate reads over 4500 and must not.
         runner = self._make_runner(scheduled=True)
-        runner.report.doctor_result = "\u65e5" * 6000
+        runner.report.applied_events = self._applied_events(100, "\u65e5" * 60)
 
         output, error = runner._update_report_pass2()
 
@@ -558,7 +573,7 @@ class NightRunnerTest(unittest.TestCase):
         runner = wiki_night.NightRunner(
             wiki_config.load_config(self.root), scheduled=True
         )
-        runner.report.doctor_result = "x" * 2000
+        runner.report.applied_events = self._applied_events(30, "x" * 60)
 
         output, error = runner._update_report_pass2()
 
@@ -580,25 +595,38 @@ class NightRunnerTest(unittest.TestCase):
             text.index("- Report tokens (est.)"), text.index("## Steps")
         )
 
-    def test_sweep_findings_truncated_when_over_char_budget(self) -> None:
+    SWEEP_TIERS = (
+        "TIER 1 — frontmatter/blocker refs now dead",
+        "TIER 2 — curated-text refs now dead",
+        "TIER 3 — merged PRs no workstream tracks",
+        "TIER 4 — archive PRs still open",
+        "UNRESOLVABLE refs (typo or wrong repo?)",
+    )
+
+    def _noisy_sweep(self, entries: int, tiers: int = 1) -> str:
+        # `entries` per tier, over the first `tiers` tier headers; the
+        # remaining headers stay with zero entries, as render_summary
+        # writes them.
+        blocks = []
+        for index, tier in enumerate(self.SWEEP_TIERS):
+            count = entries if index < tiers else 0
+            lines = [
+                f"  - acme/widget#{n} [pr/MERGED] ws.md (Next, repo_source=default): "
+                f"{'x' * 120}"
+                for n in range(count)
+            ]
+            blocks.append("\n".join([f"{tier}: {count}", *lines]))
+        return "Staleness sweep: 100 refs checked.\n\n" + "\n\n".join(blocks) + "\n"
+
+    def test_sweep_findings_truncated_to_their_share_of_the_ceiling(self) -> None:
         runner = self._make_runner(scheduled=True)
-        tier1_entries = "\n".join(
-            f"  - acme/widget#{n} [pr/MERGED] ws.md (Next, repo_source=default): "
-            f"{'x' * 120}"
-            for n in range(50)
-        )
-        runner.report.sweep_findings = (
-            "Staleness sweep: 100 refs checked.\n\n"
-            "TIER 1 — frontmatter/blocker refs now dead: 50\n"
-            f"{tier1_entries}\n\n"
-            "TIER 2 — curated-text refs now dead: 0\n"
-        )
+        runner.report.sweep_findings = self._noisy_sweep(50)
+        cap = wiki_night.sweep_findings_cap(runner.config.budgets.night_report.hard)
+        self.assertEqual(cap, 1500)
 
-        truncated = runner._truncate_sweep_findings()
+        truncated = runner._truncate_sweep_findings(cap * 4)
 
-        self.assertLessEqual(
-            len(truncated), wiki_night.SWEEP_FINDINGS_CHAR_BUDGET + 200
-        )
+        self.assertLessEqual(len(truncated.encode("utf-8")), cap * 4)
         self.assertIn("TIER 1", truncated)
         self.assertIn("... and ", truncated)
         self.assertIn("gh-sweep-", truncated)
@@ -606,13 +634,160 @@ class NightRunnerTest(unittest.TestCase):
         # built-in convention.
         self.assertIn(self.config.night.report_dir, truncated)
 
+    def test_sweep_section_stays_within_its_cap_across_five_tiers(self) -> None:
+        # Sixty entries over five tiers: every tier keeps its header and
+        # gets a pointer for its cut entries, and the section still fits.
+        runner = self._make_runner(scheduled=True)
+        runner.report.sweep_findings = self._noisy_sweep(60, tiers=5)
+        cap = wiki_night.sweep_findings_cap(runner.config.budgets.night_report.hard)
+
+        truncated = runner._truncate_sweep_findings(cap * 4)
+
+        self.assertLessEqual(len(truncated.encode("utf-8")), cap * 4)
+        for tier in self.SWEEP_TIERS:
+            self.assertIn(f"{tier}: 60", truncated)
+        pointers = [line for line in truncated.splitlines() if "... and " in line]
+        self.assertEqual(len(pointers), 5)
+        self.assertGreater(truncated.count("acme/widget#"), 0)
+
+    def test_sweep_budget_too_small_for_any_entry_keeps_headers_and_pointers(
+        self,
+    ) -> None:
+        runner = self._make_runner(scheduled=True)
+        runner.report.sweep_findings = self._noisy_sweep(3, tiers=2)
+
+        truncated = runner._truncate_sweep_findings(8)
+
+        self.assertNotIn("acme/widget#", truncated)
+        self.assertIn("... and 3 more TIER 1", truncated)
+        self.assertIn("... and 3 more TIER 2", truncated)
+
     def test_sweep_findings_not_truncated_when_under_budget(self) -> None:
         runner = self._make_runner(scheduled=True)
         runner.report.sweep_findings = "Staleness sweep: 5 refs checked.\nAll clean."
+        cap = wiki_night.sweep_findings_cap(runner.config.budgets.night_report.hard)
 
-        result = runner._truncate_sweep_findings()
+        result = runner._truncate_sweep_findings(cap * 4)
 
         self.assertEqual(result, runner.report.sweep_findings)
+
+    def test_sweep_cap_follows_the_deployments_ceiling(self) -> None:
+        # A 3200-token ceiling caps the sweep at 1200: the 28-entry sweep
+        # (about 1340 tokens) is cut there, where the default 1500 keeps it.
+        (self.root / WIKI_CONFIG_FILE).write_text(
+            WIKI_TOML + "\n[budgets]\nnight_report_tokens = 3200\n"
+        )
+        runner = wiki_night.NightRunner(
+            wiki_config.load_config(self.root), scheduled=True
+        )
+        runner.report.sweep_findings = self._noisy_sweep(28)
+        sweep_tokens = wiki_night.estimate_tokens(runner.report.sweep_findings.encode())
+        self.assertTrue(1200 < sweep_tokens < 1500, sweep_tokens)
+        self.assertEqual(wiki_night.sweep_findings_cap(3200), 1200)
+
+        text = runner._format_report()
+
+        self.assertIn("... and ", text)
+        default = self._make_runner(scheduled=True)
+        default.report.sweep_findings = runner.report.sweep_findings
+        self.assertNotIn("... and ", default._format_report())
+
+    def test_sweep_entries_go_at_the_second_shrink_step(self) -> None:
+        runner = self._make_runner(scheduled=True)
+        runner.report.sweep_findings = self._noisy_sweep(3)
+        runner.report.shrink_level = 2
+
+        text = runner._format_report()
+
+        self.assertIn("Staleness sweep: 100 refs checked.", text)
+        self.assertIn("... and 3 more TIER 1", text)
+        self.assertNotIn("acme/widget#0", text)
+
+    def test_dry_run_last_write_answers_to_the_ceiling(self) -> None:
+        # Pass 2 is stubbed so the run reaches its last write with a
+        # report nothing shrinks; the run must not exit 0 over the ceiling.
+        runner = self._make_runner(dry_run=True)
+        ceiling = runner.config.budgets.night_report.hard
+        runner.report.applied_events = self._applied_events(ceiling // 10, "x" * 60)
+        with (
+            patch.object(runner, "_preflight", return_value=("clean", "")),
+            patch.object(runner, "_acquire_lock", return_value=("locked token=x", "")),
+            patch.object(runner, "_release_lock"),
+            patch.object(runner, "_count_pending", return_value=0),
+            patch.object(runner, "_apply_pending", return_value=("applied 0", "")),
+            patch.object(runner, "_render_log", return_value=("ok", "")),
+            patch.object(runner, "_render_claude_local", return_value=("ok", "")),
+            patch.object(runner, "_gh_sweep", return_value=("ok", "")),
+            patch.object(runner, "_memory_triage", return_value=("ok", "")),
+            patch.object(runner, "_collect_metrics", return_value=("ok", "")),
+            patch.object(runner, "_run_doctor", return_value=("ok", "")),
+            patch.object(runner, "_update_report_pass2", return_value=("ok", "")),
+            patch.object(runner, "_verify_lock", return_value=("ok", "")),
+        ):
+            runner.report.doctor_clean = True
+            exit_code = runner.run()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(runner.report.outcome, wiki_night.RunOutcome.ABORTED)
+        self.assertIn(
+            "exceeds hard token budget after the full shrink",
+            runner.report.abort_reason,
+        )
+
+    def test_report_only_answers_to_the_ceiling(self) -> None:
+        (self.root / WIKI_CONFIG_FILE).write_text(
+            WIKI_TOML + "\n[budgets]\nnight_report_tokens = 50\n"
+        )
+        runner = wiki_night.NightRunner(
+            wiki_config.load_config(self.root), report_only=True
+        )
+        with patch.object(runner, "_count_pending", return_value=0):
+            exit_code = runner.run()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(runner.report.outcome, wiki_night.RunOutcome.ABORTED)
+        self.assertIn(
+            "report-only failed: night report exceeds", runner.report.abort_reason
+        )
+        self.assertIn("> 50", runner.report.abort_reason)
+
+    def test_noisy_clean_doctor_runs_through_to_pass_two(self) -> None:
+        # The plan's clean-path claim, through the orchestration: a
+        # zero-exit doctor with 400 WARN lines reaches pass 2 and the run
+        # ends clean under the ceiling.
+        runner = self._make_runner(dry_run=True)
+        doctor_result = MagicMock(
+            returncode=0, stdout=self._noisy_doctor_dump(), stderr=""
+        )
+        with (
+            patch.object(runner, "_preflight", return_value=("clean", "")),
+            patch.object(runner, "_acquire_lock", return_value=("locked token=x", "")),
+            patch.object(runner, "_release_lock"),
+            patch.object(runner, "_count_pending", return_value=0),
+            patch.object(runner, "_apply_pending", return_value=("applied 0", "")),
+            patch.object(runner, "_render_log", return_value=("ok", "")),
+            patch.object(runner, "_render_claude_local", return_value=("ok", "")),
+            patch.object(runner, "_gh_sweep", return_value=("ok", "")),
+            patch.object(runner, "_memory_triage", return_value=("ok", "")),
+            patch.object(runner, "_collect_metrics", return_value=("ok", "")),
+            patch.object(runner, "_verify_lock", return_value=("ok", "")),
+            patch("subprocess.run", return_value=doctor_result),
+        ):
+            exit_code = runner.run()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(runner.report.outcome, wiki_night.RunOutcome.CLEAN)
+        steps = {step.name: step for step in runner.report.steps}
+        self.assertTrue(steps["doctor"].success)
+        self.assertTrue(steps["report-pass-2"].success)
+        self.assertIn("report pass 2 written", steps["report-pass-2"].output)
+        self.assertLessEqual(
+            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
+        )
+        text = runner.report_path.read_text(encoding="utf-8")
+        self.assertIn(f"full output: {self._doctor_pointer(runner)}", text)
+        self.assertNotIn("stream-000.md", text)
+        self.assertIn("- Report shrunk to fit: doctor WARN lines\n", text)
 
     def test_report_pass_one_failure_aborts_before_commit(self) -> None:
         runner = self._assert_required_step_failure_blocks_commit(
@@ -625,9 +800,150 @@ class NightRunnerTest(unittest.TestCase):
         doctor_result = MagicMock(returncode=1, stdout="", stderr="some error")
         with patch("subprocess.run", return_value=doctor_result):
             output, error = runner._run_doctor()
-        self.assertNotEqual(error, "")
-        self.assertIn("some error", error)
+        self.assertIn("doctor exited 1: some error; full output: ", error)
+        self.assertIn(f"{self.config.night.report_dir}/doctor-", error)
+        self.assertIn("some error", output)
         self.assertFalse(runner.report.doctor_clean)
+
+    def _doctor_pointer(self, runner: object) -> str:
+        return f"{self.config.night.report_dir}/doctor-{runner.report.date}.txt"
+
+    def test_run_doctor_keeps_the_full_output_beside_the_report(self) -> None:
+        runner = self._make_runner(scheduled=True)
+        dump = "\n".join(
+            [
+                "PASS config — config loads; 0 companion(s) configured",
+                "WARN token-budgets — 3 surfaces checked",
+                "  WARN: workstream file estimates 2700 tokens; warn=2600, "
+                "hard=4000 [workstreams/a.md]",
+                "FAIL install — hook and deny rules checked",
+                "  FAIL: missing pre-commit hook [.git/hooks/pre-commit]",
+                "PASS links — 2 markdown files checked",
+            ]
+        )
+        doctor_result = MagicMock(returncode=1, stdout=dump, stderr="")
+        with patch("subprocess.run", return_value=doctor_result):
+            output, error = runner._run_doctor()
+
+        pointer = self._doctor_pointer(runner)
+        self.assertEqual(
+            (self.root / pointer).read_text(encoding="utf-8"), dump + "\n"
+        )
+        self.assertEqual(
+            error, f"checks: 2 PASS, 1 FAIL, 1 WARN; full output: {pointer}"
+        )
+        self.assertEqual(output, runner.report.doctor_result)
+        self.assertEqual(output.splitlines()[0], error)
+        self.assertEqual(
+            [line[:20] for line in output.splitlines()[1:]],
+            [
+                "WARN token-budgets —",
+                "  WARN: workstream f",
+                "FAIL install — hook ",
+                "  FAIL: missing pre-",
+            ],
+        )
+        self.assertFalse(runner.report.doctor_clean)
+
+    def test_run_doctor_clean_summary_is_the_counts_and_the_pointer(self) -> None:
+        runner = self._make_runner(scheduled=True)
+        dump = "PASS config — config loads\nPASS links — 2 files checked"
+        doctor_result = MagicMock(returncode=0, stdout=dump, stderr="")
+        with patch("subprocess.run", return_value=doctor_result):
+            output, error = runner._run_doctor()
+
+        pointer = self._doctor_pointer(runner)
+        self.assertEqual(error, "")
+        self.assertEqual(
+            output, f"checks: 2 PASS, 0 FAIL, 0 WARN; full output: {pointer}"
+        )
+        self.assertTrue(runner.report.doctor_clean)
+        self.assertEqual(
+            (self.root / pointer).read_text(encoding="utf-8"), dump + "\n"
+        )
+
+    def _noisy_doctor_dump(self) -> str:
+        warn_lines = [
+            f"  WARN: workstream file estimates {2600 + n} tokens; warn=2600, "
+            f"hard=4000 [workstreams/stream-{n:03d}.md]"
+            for n in range(400)
+        ]
+        return "\n".join(
+            [
+                "PASS config — config loads",
+                "FAIL validate-workstreams — 3 workstream files checked",
+                "  FAIL: a.md: expected exactly one section, found 0 "
+                "[workstreams/a.md]",
+                "WARN token-budgets — 400 surfaces checked",
+                *warn_lines,
+            ]
+        )
+
+    def test_noisy_doctor_on_the_clean_path_loses_its_warn_lines_first(self) -> None:
+        runner = self._make_runner(scheduled=True)
+        doctor_result = MagicMock(
+            returncode=0, stdout=self._noisy_doctor_dump(), stderr=""
+        )
+        with patch("subprocess.run", return_value=doctor_result):
+            runner._run_doctor()
+        runner.report.metrics["step_durations"] = {"doctor": 1.5}
+        ceiling = runner.config.budgets.night_report.hard
+        self.assertGreater(
+            wiki_night.estimate_tokens(runner.report.doctor_result.encode()), ceiling
+        )
+
+        output, error = runner._update_report_pass2()
+
+        self.assertEqual(error, "")
+        self.assertIn("report pass 2 written", output)
+        self.assertEqual(runner.report.shrink_level, 1)
+        self.assertLessEqual(runner._estimate_report_tokens(), ceiling)
+        text = runner.report_path.read_text(encoding="utf-8")
+        self.assertIn(f"full output: {self._doctor_pointer(runner)}", text)
+        self.assertIn("  FAIL: a.md: expected exactly one section", text)
+        self.assertNotIn("stream-000.md", text)
+        self.assertIn("- doctor: 1.5s", text)
+        self.assertIn("- Report shrunk to fit: doctor WARN lines\n", text)
+
+    def test_noisy_doctor_failure_writes_a_budgeted_abort_report(self) -> None:
+        runner = self._make_runner()
+        dump = self._noisy_doctor_dump()
+        doctor_result = MagicMock(returncode=1, stdout=dump, stderr="")
+        with (
+            patch.object(runner, "_preflight", return_value=("clean", "")),
+            patch.object(runner, "_acquire_lock", return_value=("locked token=x", "")),
+            patch.object(runner, "_release_lock"),
+            patch.object(runner, "_count_pending", return_value=0),
+            patch.object(runner, "_apply_pending", return_value=("applied 0", "")),
+            patch.object(runner, "_render_log", return_value=("ok", "")),
+            patch.object(runner, "_render_claude_local", return_value=("ok", "")),
+            patch.object(runner, "_gh_sweep", return_value=("ok", "")),
+            patch.object(runner, "_memory_triage", return_value=("ok", "")),
+            patch.object(runner, "_collect_metrics", return_value=("ok", "")),
+            patch("subprocess.run", return_value=doctor_result),
+            patch.object(runner, "_commit") as mock_commit,
+        ):
+            exit_code = runner.run()
+
+        self.assertEqual(exit_code, 1)
+        mock_commit.assert_not_called()
+        pointer = self._doctor_pointer(runner)
+        headline = f"checks: 1 PASS, 1 FAIL, 1 WARN; full output: {pointer}"
+        self.assertEqual(runner.report.abort_reason, f"doctor failed: {headline}")
+        self.assertEqual(
+            (self.root / pointer).read_text(encoding="utf-8"), dump + "\n"
+        )
+        text = runner.report_path.read_text(encoding="utf-8")
+        self.assertLessEqual(
+            runner._estimate_report_tokens(), runner.config.budgets.night_report.hard
+        )
+        self.assertIn(f"**ABORTED:** doctor failed: {headline}", text)
+        self.assertIn("  FAIL: a.md: expected exactly one section", text)
+        self.assertNotIn("stream-000.md", text)
+        steps = text.split("## Steps", 1)[1]
+        self.assertIn("- FAIL doctor (", steps)
+        self.assertIn(f"\n  - {headline}\n", steps)
+        self.assertIn("- Report shrunk to fit: doctor WARN lines\n", text)
 
     def test_count_pending_uses_correct_dir(self) -> None:
         runner = self._make_runner()

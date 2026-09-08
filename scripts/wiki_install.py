@@ -288,8 +288,9 @@ def seed_file(path: Path, content: str, label: str, written: list[Path]) -> None
 
 def gitignore_lines(config: WikiConfig) -> tuple[str, ...]:
     """The machine-local files plus the runtime output the scheduler and
-    the night runner produce in place: unit stdout/stderr, and every
-    report shape the runner writes. Without the second group a deployment
+    the night runner produce in place: the unit stdout/stderr and every
+    file the runner writes beside its report (the report shapes, the
+    sweep JSON, the doctor dump). Without the second group a deployment
     dirties its own tree after the first night and the next run's
     preflight aborts on it. The scheduled report is ignored by the same
     pattern and force-added by the runner's commit on purpose."""
@@ -300,6 +301,7 @@ def gitignore_lines(config: WikiConfig) -> tuple[str, ...]:
         f"{report_dir}/*.md",
         f"{report_dir}/*.log",
         f"{report_dir}/gh-sweep-*.json",
+        f"{report_dir}/doctor-*.txt",
     )
 
 

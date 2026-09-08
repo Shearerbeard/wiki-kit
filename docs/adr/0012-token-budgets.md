@@ -168,12 +168,13 @@ Option 2. The `[budgets]` table becomes:
     (lower `workstreams_in_view`, or archive workstreams; a parked page
     still renders as a row, so parking is no lever).
   - The night report trims itself to its ceiling on every write,
-    including the abort report: the doctor dump to its FAIL and WARN
-    lines plus a pointer to `<report_dir>/doctor-<date>.txt`, then the
-    sweep section, then metrics. It records `report_tokens` under
+    including the abort report. Its Doctor section carries the doctor's
+    FAIL and WARN lines plus a pointer to `<report_dir>/doctor-<date>.txt`,
+    where the full output lives; over the ceiling the report drops that
+    section's WARN lines, then the sweep section's entries, then the
+    step timings under Metrics. It records `report_tokens` under
     Metrics on every run. The sweep-findings section cap inside the
-    report is a constant derived from `night_report_tokens`, not a
-    surface.
+    report is three eighths of `night_report_tokens`, not a surface.
 - A doctor FAIL on any surface aborts the nightly commit. The docs say
   so where the budgets are explained.
 - The 80-line orientation warning is retired. Lines were the wrong unit
@@ -211,10 +212,10 @@ Gaps, each with an owner:
 
 Failure modes: an over-ceiling orientation FAILs the doctor and aborts
 the night commit until the forefront is lowered or workstreams are
-archived; a page over its ceiling does the same until curated; a night
+archived; a page over its ceiling does the same until curated. A night
 report still over its ceiling after the full shrink aborts the run with
-that reason, the same abort pass 2 performs today after its
-metrics-only shrink.
+that reason, at pass 2 and again at the last write of a dry run or a
+report-only run; no run exits 0 with an over-ceiling report.
 
 ## Links
 

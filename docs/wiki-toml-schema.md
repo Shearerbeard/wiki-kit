@@ -173,8 +173,9 @@ garden_reminder = "16:00"
 # Knob 15: the report-path and commit-message conventions
 # morning-reminder.sh re-derives independently today. One source here.
 # The installer derives the .gitignore lines for the runner's output
-# (`<report_dir>/*.md`, `*.log`, `gh-sweep-*.json`) from this value;
-# the scheduled report is force-added by the night commit regardless.
+# (`<report_dir>/*.md`, `*.log`, `gh-sweep-*.json`, `doctor-*.txt`) from
+# this value; the scheduled report is force-added by the night commit
+# regardless.
 report_dir = "reports/night"
 commit_prefix = "night:"
 
@@ -217,11 +218,15 @@ entity_tokens = 3500
 # only when present.
 memory_index_tokens = 2000
 # night_report_tokens: one night report. The night runner, not the
-# doctor, enforces this one: it trims the report to the ceiling and
-# records the report's size under its Metrics as report_tokens on
-# every write, a trend number nothing acts on. The sweep-findings
-# section inside the report has its own cap, a 1500-token code
-# constant today, and is not a surface.
+# doctor, enforces this one: on every write, the abort report included,
+# it trims the report to the ceiling (the Doctor section's WARN lines
+# go first, then the sweep section's entries, then the step timings)
+# and records the report's size under its Metrics as report_tokens, a
+# trend number nothing acts on. The report carries only the doctor's
+# FAIL and WARN lines; the full output is kept beside it as
+# <report_dir>/doctor-<date>.txt. The sweep-findings section inside
+# the report is capped at three eighths of this ceiling (1500 at the
+# default) and is not a surface.
 night_report_tokens = 4000
 
 # Escape hatch: an explicit WARN threshold for any surface, which must

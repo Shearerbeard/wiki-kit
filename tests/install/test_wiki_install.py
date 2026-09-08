@@ -48,6 +48,7 @@ def test_blank_repo_boot(tmp_path: Path) -> None:
     assert "reports/night/*.md" in gitignore
     assert "reports/night/*.log" in gitignore
     assert "reports/night/gh-sweep-*.json" in gitignore
+    assert "reports/night/doctor-*.txt" in gitignore
 
     # The boot floor (charter decision 4): initial commit, projections,
     # orientation skeleton with an empty-state Quickstart.
@@ -153,6 +154,7 @@ def test_hand_added_ignore_lines_are_not_duplicated(tmp_path: Path) -> None:
     assert lines.count("CLAUDE.local.md") == 1
     assert "reports/scheduler-logs/" in lines
     assert "reports/night/gh-sweep-*.json" in lines
+    assert "reports/night/doctor-*.txt" in lines
     assert len(lines) == len(set(lines))
 
 
