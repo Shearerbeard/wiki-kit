@@ -396,6 +396,23 @@ def estimate_token_count(text: str) -> int:
     return wiki_config.estimate_tokens(text.encode("utf-8"))
 
 
+class OrientationParts(NamedTuple):
+    """The orientation split at its Uncommitted Changes heading: the
+    text the ceiling covers, and the machine-local section outside it
+    (dirt and worktrees on this machine, which no curation can shrink)."""
+
+    budgeted: str
+    machine_local: str
+
+
+def split_at_uncommitted(text: str) -> OrientationParts:
+    marker = f"\n{UNCOMMITTED_HEADING}\n"
+    index = text.find(marker)
+    if index == -1:
+        return OrientationParts(text, "")
+    return OrientationParts(text[: index + 1], text[index + 1 :])
+
+
 class TreeFacts(NamedTuple):
     label: str
     branch: str
@@ -499,10 +516,29 @@ def collect_uncommitted_facts(
     return facts
 
 
+def uncommitted_urgency(fact: TreeFacts | MissingCheckout) -> int:
+    """Row order for the Uncommitted Changes section: what a cold session
+    must not miss comes first, and ties keep config order. Staged dirt,
+    dirt, unpushed commits, no upstream and unpushed, no upstream but
+    pushed, the fixed no-checkout note; clean checkouts rank last and
+    collapse to one line."""
+    if isinstance(fact, MissingCheckout):
+        return 5
+    if fact.staged:
+        return 0
+    if fact.dirty:
+        return 1
+    if fact.unpushed:
+        return 2
+    if fact.unpushed is None:
+        return 4 if fact.remote_has_head else 3
+    return 6
+
+
 def render_uncommitted_lines(facts: list[TreeFacts | MissingCheckout]) -> list[str]:
     lines = []
     clean = []
-    for fact in facts:
+    for fact in sorted(facts, key=uncommitted_urgency):
         if isinstance(fact, MissingCheckout):
             lines.append(f"- {fact.label}: {NO_CHECKOUT_NOTE}")
             continue
@@ -672,14 +708,16 @@ def render_and_write_claude_local(
         now=args.now if args.now is not None else utc_timestamp(),
         memory_index_line=config.memory_index_line,
     )
-    tokens = estimate_token_count(text)
+    parts = split_at_uncommitted(text)
+    tokens = estimate_token_count(parts.budgeted)
     hard_budget = config.budgets.orientation_index.hard
     if tokens > hard_budget:
         print(
-            f"warning: {output} estimates {tokens} tokens "
-            f"({tokens - hard_budget} over the "
-            f"{hard_budget}-token hard budget; "
-            f"doctor will FAIL)",
+            f"warning: {output} estimates {tokens} tokens to its "
+            f"{UNCOMMITTED_HEADING} heading ({tokens - hard_budget} over the "
+            f"{hard_budget}-token hard budget; the "
+            f"{estimate_token_count(parts.machine_local)}-token section after "
+            "the heading is outside it; doctor will FAIL)",
             file=sys.stderr,
         )
     write_atomic(output, text)

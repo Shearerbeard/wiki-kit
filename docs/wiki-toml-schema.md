@@ -205,10 +205,11 @@ workstream_tokens = 4000
 # Rarely changed; the same warn rule applies.
 #
 # orientation_index_tokens: the generated orientation index,
-# CLAUDE.local.md in the wiki repo. Measured as the whole file today;
-# ADR 0012 bounds it at the "## Uncommitted Changes" heading, which a
-# later K4 stage implements. A docked consumer's .wiki/orientation.md
-# is a fixed pointer page and is not budgeted.
+# CLAUDE.local.md in the wiki repo, measured up to its "## Uncommitted
+# Changes" heading: that section is machine-local (dirt and worktrees
+# on this machine) and sits outside the ceiling, and the doctor's
+# summary line reports its size. A docked consumer's
+# .wiki/orientation.md is a fixed pointer page and is not budgeted.
 orientation_index_tokens = 3000
 # entity_tokens: one wiki/entities/ page.
 entity_tokens = 3500
@@ -295,9 +296,10 @@ tokens and a collapsed row about 37 (the row's padding dots are two
 bytes each, and the estimator counts bytes), while the Quickstart, the
 pending line, the recent sessions, the parked rows, and the headings
 together cost about 680. The orientation therefore costs roughly `680
-+ 68 x in_view + 37 x (active - in_view)` plus the machine-local
-Uncommitted Changes section. With 30 active workstreams and 8 in view
-that is about 2,000 tokens against the 3000 ceiling. The doctor's
++ 68 x in_view + 37 x (active - in_view)`; the machine-local
+Uncommitted Changes section sits outside the ceiling and is not in
+that sum. With 30 active workstreams and 8 in view that is about 2,000
+tokens against the 3000 ceiling. The doctor's
 finding on an over-threshold orientation names these two costs beside
 the active and in-view counts and sizes both levers from them.
 

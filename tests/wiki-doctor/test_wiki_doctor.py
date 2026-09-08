@@ -42,6 +42,8 @@ def _load_module() -> Any:
 
 wiki_doctor = _load_module()
 
+import wiki_render  # noqa: E402
+
 MINIMAL_CONFIG = """\
 [wiki]
 name = "acme-notes"
@@ -471,6 +473,55 @@ class DoctorTest(unittest.TestCase):
         finding = result.findings[0]
         self.assertIn("CLAUDE.local.md", finding.message)
         return finding.message
+
+    def test_token_budget_orientation_stops_at_the_uncommitted_heading(self) -> None:
+        # 400 bytes before the heading is 100 tokens, at the derived warn
+        # of a 200 ceiling; the 2400-byte section after it would take the
+        # whole file to 700, past the ceiling.
+        self._budgets("orientation_index_tokens = 200\n")
+        section = f"{wiki_render.UNCOMMITTED_HEADING}\n\n" + "- y" * 800 + "\n"
+        self.write("CLAUDE.local.md", "x" * 399 + "\n" + section)
+
+        result = wiki_doctor.check_token_budgets(self.ctx)
+
+        self.assertEqual(result.findings, ())
+        self.assertGreater(
+            wiki_doctor.estimated_tokens(self.root / "CLAUDE.local.md"), 200
+        )
+        self.assertIn(
+            "CLAUDE.local.md measured to its Uncommitted Changes heading, the "
+            f"{wiki_doctor.estimate_tokens(section.encode())}-token section after "
+            "it outside the ceiling",
+            result.summary,
+        )
+
+    def test_token_budget_orientation_measure_matches_the_renderer(self) -> None:
+        # The doctor's number is the renderer's number for the same
+        # file: both split at the heading the renderer writes.
+        self._budgets("orientation_index_tokens = 200\n")
+        text = wiki_render.render_claude_local(
+            quickstart="**Hot:** " + "x" * 1200,
+            pending_lines=["None."],
+            tree="ACTIVE\n└─ stream-01",
+            recent_lines=["- [2026-07-01T00:00:00Z] Entry"],
+            uncommitted_lines=[f"- worktree {n}: 3 dirty" for n in range(200)],
+            now="2026-07-02T00:00:00Z",
+            memory_index_line=None,
+        )
+        self.write("CLAUDE.local.md", text)
+        self._active_workstreams(1)
+
+        message = self._orientation_message()
+
+        expected = wiki_render.estimate_token_count(
+            wiki_render.split_at_uncommitted(text).budgeted
+        )
+        self.assertIn(
+            "CLAUDE.local.md (to its Uncommitted Changes heading) estimates "
+            f"{expected} tokens",
+            message,
+        )
+        self.assertGreater(wiki_render.estimate_token_count(text), expected + 1000)
 
     def test_token_budget_orientation_fail_names_the_lever(self) -> None:
         # 1201 bytes is 301 tokens: 101 over a 200 ceiling, so the lever

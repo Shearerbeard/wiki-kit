@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1462,6 +1463,95 @@ class UncommittedLinesTest(unittest.TestCase):
             lines, ["- widget main: no local checkout configured on this machine"]
         )
 
+    def test_rows_order_by_urgency_not_config_order(self) -> None:
+        # Config order is the wiki repo, then companions and their
+        # worktrees; a cold session needs the dirty and unpushed rows
+        # first, whatever checkout they belong to, and no row dropped.
+        facts = [
+            wiki_render.TreeFacts("wiki repo", "main", "aaa1111", 0, 0, 0),
+            wiki_render.TreeFacts(
+                "worktree pushed", "feat", "bbb2222", 0, 0, None, remote_has_head=True
+            ),
+            wiki_render.TreeFacts("widget main", "main", "ccc3333", 0, 0, 3),
+            wiki_render.MissingCheckout("gadget main"),
+            wiki_render.TreeFacts(
+                "worktree loner", "local", "ddd4444", 0, 0, None, remote_has_head=False
+            ),
+            wiki_render.TreeFacts("worktree wip", "wip", "eee5555", 2, 0, 0),
+            wiki_render.TreeFacts("worktree staged", "st", "fff6666", 4, 1, 1),
+        ]
+        self.assertEqual(
+            wiki_render.render_uncommitted_lines(facts),
+            [
+                "- worktree staged (st @ fff6666): 4 dirty (1 staged), 1 unpushed",
+                "- worktree wip (wip @ eee5555): 2 dirty",
+                "- widget main (main @ ccc3333): 3 unpushed",
+                "- worktree loner (local @ ddd4444): no upstream (unpushed)",
+                "- worktree pushed (feat @ bbb2222): no upstream (pushed)",
+                "- gadget main: no local checkout configured on this machine",
+                "- clean: wiki repo",
+            ],
+        )
+
+    def test_rows_keep_config_order_within_a_tier(self) -> None:
+        facts = [
+            wiki_render.TreeFacts("wiki repo", "main", "aaa1111", 1, 0, 0),
+            wiki_render.TreeFacts("widget main", "main", "ccc3333", 5, 0, 0),
+            wiki_render.TreeFacts("worktree x", "x", "ddd4444", 0, 0, 0),
+            wiki_render.TreeFacts("worktree y", "y", "eee5555", 0, 0, 0),
+        ]
+        self.assertEqual(
+            wiki_render.render_uncommitted_lines(facts),
+            [
+                "- wiki repo (main @ aaa1111): 1 dirty",
+                "- widget main (main @ ccc3333): 5 dirty",
+                "- clean: worktree x, worktree y",
+            ],
+        )
+
+
+class SplitAtUncommittedTest(unittest.TestCase):
+    def test_rendered_orientation_splits_at_the_heading(self) -> None:
+        text = (
+            "> banner\n\n## Quickstart\n\nhot\n\n## Workstreams\n\nACTIVE\n\n"
+            f"{wiki_render.UNCOMMITTED_HEADING}\n\n- wiki repo: clean\n"
+        )
+        parts = wiki_render.split_at_uncommitted(text)
+        # The blank separator line stays on the budgeted side: the split is
+        # at the heading line itself.
+        self.assertEqual(
+            parts.budgeted,
+            "> banner\n\n## Quickstart\n\nhot\n\n## Workstreams\n\nACTIVE\n\n",
+        )
+        self.assertEqual(
+            parts.machine_local,
+            f"{wiki_render.UNCOMMITTED_HEADING}\n\n- wiki repo: clean\n",
+        )
+        self.assertEqual(parts.budgeted + parts.machine_local, text)
+
+    def test_text_without_the_heading_is_all_budgeted(self) -> None:
+        parts = wiki_render.split_at_uncommitted("x" * 40 + "\n")
+        self.assertEqual(parts, wiki_render.OrientationParts("x" * 40 + "\n", ""))
+
+    def test_a_heading_mentioned_mid_line_does_not_split(self) -> None:
+        text = f"see {wiki_render.UNCOMMITTED_HEADING} below\n"
+        self.assertEqual(wiki_render.split_at_uncommitted(text).machine_local, "")
+
+    def test_edges_the_renderer_never_writes_measure_whole(self) -> None:
+        # The doctor reads files the renderer did not write. A heading on
+        # the first line has nothing before it to budget, and a heading
+        # inside a CRLF file is not the marker; both measure the whole
+        # file, the safe direction. A repeated heading splits at the first.
+        first = f"{wiki_render.UNCOMMITTED_HEADING}\n\n- wiki repo: clean\n"
+        self.assertEqual(wiki_render.split_at_uncommitted(first).machine_local, "")
+        crlf = f"x\r\n\r\n{wiki_render.UNCOMMITTED_HEADING}\r\n\r\n- y\r\n"
+        self.assertEqual(wiki_render.split_at_uncommitted(crlf).machine_local, "")
+        twice = (
+            f"a\n\n{wiki_render.UNCOMMITTED_HEADING}\n\n- b\n\n"
+            f"{wiki_render.UNCOMMITTED_HEADING}\n\n- c\n"
+        )
+        self.assertEqual(wiki_render.split_at_uncommitted(twice).budgeted, "a\n\n")
+
 
 class GardenLockWrapperTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -1740,6 +1830,30 @@ class ClaudeLocalCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("token", result.stderr)
         self.assertIn("doctor will FAIL", result.stderr)
+
+    def test_token_warning_measures_to_the_uncommitted_heading(self) -> None:
+        # The number in the warning is the doctor's measure: the file up
+        # to its Uncommitted Changes heading, not the whole file.
+        qs = self.write_quickstart(f"**Hot:** {'x' * 13_000}\n")
+        result = self.run_cli("--quickstart-file", str(qs))
+        self.assertEqual(result.returncode, 0)
+        heading = re.escape(wiki_render.UNCOMMITTED_HEADING)
+        match = re.search(
+            rf"estimates (\d+) tokens to its {heading} heading", result.stderr
+        )
+        self.assertIsNotNone(match, result.stderr)
+        text = self.output.read_text(encoding="utf-8")
+        parts = wiki_render.split_at_uncommitted(text)
+        self.assertNotEqual(parts.machine_local, "")
+        self.assertEqual(
+            int(match.group(1)), wiki_render.estimate_token_count(parts.budgeted)
+        )
+        self.assertLess(int(match.group(1)), wiki_render.estimate_token_count(text))
+        section = wiki_render.estimate_token_count(parts.machine_local)
+        self.assertIn(
+            f"the {section}-token section after the heading is outside it",
+            result.stderr,
+        )
 
     def test_no_token_warning_when_within_budget(self) -> None:
         qs = self.write_quickstart("**Hot:** small.\n")

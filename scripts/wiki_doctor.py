@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -61,6 +61,7 @@ from wiki_frontmatter import (  # noqa: E402
 from wiki_render import (  # noqa: E402
     DEFAULT_BUILD_INDEX_SCRIPT,
     render_log,
+    split_at_uncommitted,
 )
 
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
@@ -503,6 +504,7 @@ class BudgetedSurface(NamedTuple):
     path: Path
     budget: Budget
     lever: Lever | None
+    tokens: int
 
 
 def check_token_budgets(ctx: DoctorContext) -> CheckOutcome:
@@ -510,40 +512,61 @@ def check_token_budgets(ctx: DoctorContext) -> CheckOutcome:
     findings: list[Finding] = []
     budgets = token_budgets(ctx.config)
     surfaces: list[BudgetedSurface] = []
+    notes: list[str] = []
     orientation = ctx.repo_root / "CLAUDE.local.md"
     if orientation.exists():
+        # The ceiling covers the orientation up to its Uncommitted Changes
+        # heading; the section after it is this machine's state.
+        parts = split_at_uncommitted(orientation.read_text(encoding="utf-8"))
+        budget = budgets["orientation_index"]
+        if parts.machine_local:
+            # The finding names the boundary so a reader of the findings
+            # alone does not try to shrink the section outside it.
+            budget = replace(
+                budget, label=f"{budget.label} (to its Uncommitted Changes heading)"
+            )
+            section_tokens = estimate_tokens(parts.machine_local.encode("utf-8"))
+            notes.append(
+                "CLAUDE.local.md measured to its Uncommitted Changes heading, "
+                f"the {section_tokens}-token section after it outside the ceiling"
+            )
         surfaces.append(
             BudgetedSurface(
-                orientation, budgets["orientation_index"], orientation_budget_lever(ctx)
+                orientation,
+                budget,
+                orientation_budget_lever(ctx),
+                estimate_tokens(parts.budgeted.encode("utf-8")),
             )
         )
     # The memory index is optional harness state: budget it when present,
     # say nothing when a deployment has none.
     if ctx.memory_index.exists():
         surfaces.append(
-            BudgetedSurface(ctx.memory_index, budgets["memory_index"], None)
+            BudgetedSurface(
+                ctx.memory_index,
+                budgets["memory_index"],
+                None,
+                estimated_tokens(ctx.memory_index),
+            )
         )
     surfaces.extend(
-        BudgetedSurface(path, budgets["workstream"], None)
+        BudgetedSurface(path, budgets["workstream"], None, estimated_tokens(path))
         for path in workstream_validation_files(ctx.repo_root)
     )
     # Every page under wiki/entities/, nested or not: the same scope the
     # link check reads.
     surfaces.extend(
-        BudgetedSurface(path, budgets["entity"], None)
+        BudgetedSurface(path, budgets["entity"], None, estimated_tokens(path))
         for path in sorted((ctx.repo_root / "wiki" / "entities").glob("**/*.md"))
     )
     for surface in surfaces:
         finding = budget_finding(
-            name,
-            surface.path,
-            surface.budget,
-            estimated_tokens(surface.path),
-            surface.lever,
+            name, surface.path, surface.budget, surface.tokens, surface.lever
         )
         if finding is not None:
             findings.append(finding)
-    return outcome(name, findings, f"{len(surfaces)} surfaces checked")
+    summary = "; ".join([f"{len(surfaces)} surfaces checked", *notes])
+    return outcome(name, findings, summary)
 
 
 def is_external_link(target: str) -> bool:
