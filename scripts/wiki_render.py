@@ -79,6 +79,13 @@ DETAIL_LINE = "Detail: workstreams/<name>.md — read the relevant file for your
 ENTITIES_LINE = "Entities: wiki/entities/ — synthesized topic pages for deep-dives"
 PENDING_HEADING = "## Pending unreviewed handoffs"
 WORKSTREAMS_HEADING = "## Workstreams"
+# The tree is line art: outside a fence a CommonMark viewer joins its
+# lines into one paragraph. CommonMark closes a fence on a line holding
+# only a backtick run at least as long as the opener; the tree is content
+# the renderer does not own, so the fence outruns every run in it rather
+# than only the line-leading ones.
+TREE_FENCE_MIN = 3
+BACKTICK_RUN_RE = re.compile("`+")
 RECENT_HEADING = (
     "## Recent Sessions (last 5 log entries — log.md is the generated projection)"
 )
@@ -249,6 +256,11 @@ def render_recent_session_lines(log_text: str) -> list[str]:
     ]
 
 
+def tree_fence(tree: str) -> str:
+    longest = max((len(run) for run in BACKTICK_RUN_RE.findall(tree)), default=0)
+    return "`" * max(TREE_FENCE_MIN, longest + 1)
+
+
 def workstreams_tree(
     root: Path,
     build_index_script: Path = DEFAULT_BUILD_INDEX_SCRIPT,
@@ -345,6 +357,7 @@ def render_claude_local(
         raise ValidationError(f"timestamp {now!r} is not canonical {TIMESTAMP_FORMAT}")
     validate_quickstart(quickstart, memory_index_line)
     memory_lines = [] if memory_index_line is None else [memory_index_line]
+    fence = tree_fence(tree)
     lines = [
         BANNER_TEMPLATE.format(now=now),
         "",
@@ -362,7 +375,9 @@ def render_claude_local(
         "",
         WORKSTREAMS_HEADING,
         "",
+        fence,
         *tree.splitlines(),
+        fence,
         "",
         RECENT_HEADING,
         "",

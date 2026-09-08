@@ -21,6 +21,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import wiki_config  # noqa: E402
+from markdown_it import MarkdownIt  # noqa: E402
 
 BOUNDARY = "2026-06-04T16:30:00Z"
 LEGACY_TEXT = (
@@ -1043,8 +1044,10 @@ class ClaudeLocalAssemblyTest(unittest.TestCase):
             "\n"
             "## Workstreams\n"
             "\n"
+            "```\n"
             "ACTIVE\n"
             "└─ notes-system\n"
+            "```\n"
             "\n"
             "## Recent Sessions (last 5 log entries — log.md is the "
             "generated projection)\n"
@@ -1076,8 +1079,10 @@ class ClaudeLocalAssemblyTest(unittest.TestCase):
             "\n"
             "## Workstreams\n"
             "\n"
+            "```\n"
             "ACTIVE\n"
             "└─ notes-system\n"
+            "```\n"
             "\n"
             "## Recent Sessions (last 5 log entries — log.md is the "
             "generated projection)\n"
@@ -1089,6 +1094,58 @@ class ClaudeLocalAssemblyTest(unittest.TestCase):
             "- wiki repo: clean\n"
         )
         self.assertEqual(self.assemble(memory_index_line=None), expected)
+
+    def test_tree_survives_commonmark_with_line_structure(self) -> None:
+        # Every shape build-index emits: connectors, three-space
+        # continuation lines, collapsed rows, the archive pointer.
+        tree = (
+            "ACTIVE\n"
+            "├─ alpha ······ K4 Stage 4 in progress\n"
+            "│  main @ abc1234\n"
+            "│  Next: land the fence\n"
+            "│\n"
+            "└─ beta ······· blocked on `#12`\n"
+            "   main @ def5678\n"
+            "   Next: the owner merges `#12`\n"
+            "\n"
+            "ACTIVE, NOT IN THE FOREFRONT (2)\n"
+            "- gamma ······· 2026-08-01 · Blocked: waits on alpha\n"
+            "- delta ······· 2026-07-01 · Next: pick up after gamma\n"
+            "\n"
+            "PARKED\n"
+            "└─ epsilon ····· parked until the rig is back\n"
+            "\n"
+            "ARCHIVED (3) → workstreams/_archive/"
+        )
+        tokens = MarkdownIt("commonmark").parse(self.assemble(tree=tree))
+        fences = [token for token in tokens if token.type == "fence"]
+        self.assertEqual(len(fences), 1)
+        self.assertEqual(fences[0].content, tree + "\n")
+        self.assertEqual(fences[0].content.count("\n"), len(tree.splitlines()))
+        leaked = [
+            token.content
+            for token in tokens
+            if token.type == "inline" and any(c in token.content for c in "├└│")
+        ]
+        self.assertEqual(leaked, [])
+
+    def test_fence_outruns_backtick_runs_in_the_tree(self) -> None:
+        tree = "ACTIVE\n└─ alpha ······ Next: fix the ``` fence\n   ```\n   more"
+        rendered = self.assemble(tree=tree)
+        self.assertIn("\n````\nACTIVE\n", rendered)
+        self.assertIn("\n   more\n````\n", rendered)
+        fences = [
+            token
+            for token in MarkdownIt("commonmark").parse(rendered)
+            if token.type == "fence"
+        ]
+        self.assertEqual(len(fences), 1)
+        self.assertEqual(fences[0].content, tree + "\n")
+
+    def test_tree_fence_is_at_least_three_backticks(self) -> None:
+        self.assertEqual(wiki_render.tree_fence("ACTIVE\n└─ one"), "```")
+        self.assertEqual(wiki_render.tree_fence("a `b` c"), "```")
+        self.assertEqual(wiki_render.tree_fence("a ``` c"), "````")
 
     def test_render_then_extract_round_trip(self) -> None:
         quickstart = "**Hot:** thing one.\nNext: thing two."
