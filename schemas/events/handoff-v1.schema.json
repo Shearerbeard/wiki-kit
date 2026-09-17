@@ -33,7 +33,7 @@
     },
     "tool": {
       "type": "string",
-      "enum": ["claude-code", "opencode", "codex", "manual"]
+      "enum": ["claude-code", "opencode", "codex", "manual", "pi"]
     },
     "aura": {
       "type": "object",
