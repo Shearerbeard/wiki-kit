@@ -78,6 +78,7 @@ class Tool(StrEnum):
     OPENCODE = "opencode"
     CODEX = "codex"
     MANUAL = "manual"
+    PI = "pi"
 
 
 class WorkstreamRelationship(StrEnum):
