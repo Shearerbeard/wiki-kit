@@ -46,12 +46,12 @@ date: 2026-09-16
 harness: opencode
 agent: opencode-go/glm-5.3-flash
 workstreams: [wiki-kit]
-repo: /Users/mshearer/workspace/aura-session-docs
+repo: <consumer-repo>
 source: scripts/wiki_garden.py apply of handoff event 01a0aac0-3e7a-74a9-bda2-4bbd26bd7ea3
 ```
 
-A handoff agent proposed workstream `aura-park-reify` as a `needs_review`
-primary route, but no `workstreams/aura-park-reify.md` exists (the
+A handoff agent proposed workstream `park-reify` as a `needs_review`
+primary route, but no `workstreams/park-reify.md` exists (the
 established page is `hitl-271-park-reify.md`). Two dead ends followed:
 
 1. `wiki-garden.py` refuses to run: a `needs_review` primary naming a
