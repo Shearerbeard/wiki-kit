@@ -1,7 +1,9 @@
 ---
 name: garden
+license: MIT
 # Rendered from the wiki-kit template by wiki-dock install; a reinstall
 # overwrites this file.
+# Source: https://github.com/Shearerbeard/wiki-kit (MIT, © 2026 Mike Shearer)
 description: |
   Rebuild the CLAUDE.local.md index from workstream files. Python scripts handle deterministic
   parts (validation, tree generation, stale detection, and the final CLAUDE.local.md render via

@@ -98,6 +98,15 @@ uv run ruff check .
 scripts/install-smoke/run.sh   # Docker end-to-end, offline
 ```
 
+## License and Attribution
+
+MIT, © 2026 Mike Shearer. See [LICENSE](LICENSE).
+
+Skills rendered by wiki-dock carry a source marker in their frontmatter. If
+you adapt the kit or a rendered skill, keep a Lineage block naming the source
+repo and path. Add the commit you started from and what you changed.
+[NOTICE](NOTICE) has the format.
+
 ## Provenance
 
 This repo starts with fresh history by ruled decision.
