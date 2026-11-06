@@ -137,11 +137,8 @@ class WikiEventCliTest(CliHarness):
             with self.subTest(fixture=fixture):
                 self.assert_command_fails("validate", TEST_DIR / fixture)
 
-    def test_pi_tool_rejected_for_v2_events(self) -> None:
-        # K2 audit outcome: the family-specific "pi" member is dropped from
-        # the kit's tool enum (schema and Python in lockstep); a v2 event
-        # carrying it must fail validation.
-        self.assertNotIn("pi", wiki_event.enum_values(wiki_event.Tool))
+    def test_pi_tool_accepted_for_historical_events(self) -> None:
+        self.assertIn("pi", wiki_event.enum_values(wiki_event.Tool))
         event = {
             "schema_version": 2,
             "event_id": self.make_uuid7(self.now_ms() - 1000),
@@ -157,13 +154,18 @@ class WikiEventCliTest(CliHarness):
                     "proposed_action": "update",
                 }
             ],
-            "summary": "The dropped pi tool value must be rejected.",
+            "summary": "Pi handoffs remain readable.",
             "status": "pending_garden",
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            event_path = Path(tmp) / "pi-tool.json"
-            event_path.write_text(json.dumps(event))
-            self.assert_command_fails("validate", event_path)
+        for version in (2, 1):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                event["schema_version"] = version
+                if version == 1:
+                    event["aura"] = event.pop("repo")
+                    del event["aura"]["name"]
+                event_path = Path(tmp) / "pi-tool.json"
+                event_path.write_text(json.dumps(event))
+                self.assert_command_ok("validate", event_path)
 
     def test_generated_event_validates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
