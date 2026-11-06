@@ -1,0 +1,13 @@
+wiki-kit
+
+© 2026 Mike Shearer. MIT, see LICENSE.
+
+Skills rendered by wiki-dock carry a marker naming this repository, its
+license, and its author. Keep that marker when you edit a rendered skill;
+it is how a later reader finds the source.
+
+If you adapt or re-author any part of this work, keep a Lineage block:
+
+    Source: Shearerbeard/wiki-kit (<path>), <commit>
+    License: MIT
+    Changes: <what you changed>

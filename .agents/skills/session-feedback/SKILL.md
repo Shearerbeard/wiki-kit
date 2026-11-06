@@ -1,7 +1,9 @@
 ---
 name: session-feedback
+license: MIT
 # Rendered from the wiki-kit template by wiki-dock install; a reinstall
 # overwrites this file.
+# Source: https://github.com/Shearerbeard/wiki-kit (MIT, © 2026 Mike Shearer)
 description: |
   File structured feedback about stale or contradictory wiki state so /garden can triage it.
   Use when a session loads and CLAUDE.local.md or workstream files contain outdated or

@@ -1,7 +1,9 @@
 ---
 name: handoff
+license: MIT
 # Rendered from the wiki-kit template by wiki-dock install; a reinstall
 # overwrites this file.
+# Source: https://github.com/Shearerbeard/wiki-kit (MIT, © 2026 Mike Shearer)
 description: |
   Write a session handoff summary. This captures your current context so the next session
   (which may be a different model or tool) can pick up cleanly.
