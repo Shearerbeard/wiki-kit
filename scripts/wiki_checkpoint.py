@@ -130,12 +130,17 @@ def event_snapshot(root: Path) -> dict[str, str]:
     if not events_dir.exists():
         return snapshot
     for path in sorted(events_dir.rglob("*")):
-        if path.is_dir():
+        if path.is_dir() and not path.is_symlink():
             continue
         rel = relative_path(root, path)
         if path.is_symlink() or not path.is_file():
             raise CheckpointError(f"event store entry must be a regular file: {rel}")
-        if path.suffix != ".json":
+        installer_seed = (
+            path == events_dir / ".gitkeep"
+            and path.stat().st_size == 0
+            and not path.stat().st_mode & 0o111
+        )
+        if path.suffix != ".json" and not installer_seed:
             raise CheckpointError(f"unexpected non-JSON event store entry: {rel}")
         snapshot[rel] = sha256(path)
     return snapshot

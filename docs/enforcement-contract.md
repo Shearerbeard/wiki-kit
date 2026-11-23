@@ -106,6 +106,15 @@ Covered: everything above, on demand and on the nightly cadence.
 NOT covered: nothing blocks between doctor runs; the doctor observes
 and reports. It never rewrites.
 
+## Garden checkpoint
+
+The garden checkpoint (`scripts/wiki_checkpoint.py`) snapshots the event
+store at preflight and checks it again before staging and verification.
+It accepts the installer's empty `wiki/events/.gitkeep` only as a regular,
+non-executable file at that exact path. The seed stays in the snapshot,
+so deletion or mutation blocks the checkpoint. Nested markers, symlinks,
+and other non-JSON files are rejected.
+
 ## What is convention only
 
 The curation flow (which model class may curate workstreams, when

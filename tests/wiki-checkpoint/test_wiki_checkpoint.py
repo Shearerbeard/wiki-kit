@@ -74,6 +74,7 @@ class WikiCheckpointTest(unittest.TestCase):
         ):
             (self.root / directory).mkdir(parents=True, exist_ok=True)
         files = {
+            "wiki/events/.gitkeep": "",
             "CLAUDE.local.md": "local\n",
             "wiki/log.md": "log\n",
             "wiki/pending/index.json": "{}\n",
@@ -162,6 +163,84 @@ class WikiCheckpointTest(unittest.TestCase):
         (self.root / path).write_text(content, encoding="utf-8")
         run_git(self.root, "--literal-pathspecs", "add", "--", path)
         run_git(self.root, "commit", "-q", "-m", "add archive source")
+
+    def test_installer_seed_survives_checkpoint_round_trip(self) -> None:
+        handoff = self.write_handoff()
+        result, _, error = self.preflight()
+        self.assertEqual((result, error), (0, ""))
+        state = json.loads((self.state_dir / "checkpoint.json").read_text())
+        seed = "wiki/events/.gitkeep"
+        self.assertEqual(
+            state["event_baseline"][seed],
+            wiki_checkpoint.sha256(self.root / seed),
+        )
+        result, _, error = self.approve(initial=True)
+        self.assertEqual((result, error), (0, ""))
+        result, _, error = self.prepare()
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(self.staged_paths(), {handoff})
+        result, _, error = self.command("verify", "--state-dir", str(self.state_dir))
+        self.assertEqual((result, error), (0, ""))
+
+    def test_event_snapshot_rejects_malformed_markers(self) -> None:
+        seed = self.root / "wiki/events/.gitkeep"
+        for kind in (
+            "nested",
+            "nonempty",
+            "executable",
+            "symlink",
+            "symlink-directory",
+            "other",
+        ):
+            with self.subTest(kind=kind):
+                path = seed
+                if kind == "nested":
+                    path = self.root / "wiki/events/nested/.gitkeep"
+                    path.parent.mkdir()
+                    path.touch()
+                elif kind == "nonempty":
+                    path.write_text("not empty")
+                elif kind == "executable":
+                    path.chmod(0o755)
+                elif kind in {"symlink", "symlink-directory"}:
+                    path.unlink()
+                    target = (
+                        "docs" if kind == "symlink-directory" else "docs/existing.md"
+                    )
+                    path.symlink_to(self.root / target)
+                else:
+                    path = self.root / "wiki/events/notes.txt"
+                    path.touch()
+                try:
+                    with self.assertRaises(wiki_checkpoint.CheckpointError):
+                        wiki_checkpoint.event_snapshot(self.root)
+                finally:
+                    path.unlink()
+                    seed.touch()
+                    seed.chmod(0o644)
+
+    def test_seed_mutation_after_preflight_is_rejected(self) -> None:
+        result, _, error = self.preflight()
+        self.assertEqual((result, error), (0, ""))
+        (self.root / "wiki/events/.gitkeep").write_text("changed")
+
+        result, _, error = self.prepare()
+
+        self.assertEqual(result, 1)
+        self.assertIn("wiki/events/.gitkeep", error)
+        self.assertEqual(self.staged_paths(), set())
+
+    def test_seed_deletion_after_preflight_is_rejected(self) -> None:
+        result, _, error = self.preflight()
+        self.assertEqual((result, error), (0, ""))
+        (self.root / "wiki/events/.gitkeep").unlink()
+
+        result, _, error = self.prepare()
+
+        self.assertEqual(result, 1)
+        self.assertIn("event files disappeared", error)
+        self.assertIn("wiki/events/.gitkeep", error)
+        self.assertEqual(self.staged_paths(), set())
 
     def test_preflight_rejects_staged_file(self) -> None:
         (self.root / "CLAUDE.local.md").write_text("changed\n", encoding="utf-8")
